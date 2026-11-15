@@ -7,10 +7,31 @@ name = "zvonilka-backend"
 version = "0.2.0.dev0"
 description = "Zvonilka room repository implementation, not yet a runnable API"
 requires-python = ">=3.12"
-dependencies = ["redis>=5.2,<7"]
+dependencies = [
+    "alembic>=1.13,<2",
+    "anyio>=4.8,<5",
+    "argon2-cffi>=23.1,<26",
+    "asyncpg>=0.29,<1",
+    "fastapi>=0.115,<1",
+    "pydantic-settings>=2.7,<3",
+    "pyjwt>=2.10,<3",
+    "redis>=5.2,<7",
+    "sqlalchemy[asyncio]>=2.0,<2.1",
+    "uvicorn>=0.30,<1",
+]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/zvonilka"]
+packages = ["zvonilka/backend/src/zvonilka"]
 
 [tool.ruff]
 line-length = 100
+
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = ["fastapi.Depends"]
+
+
+[dependency-groups]
+dev = [
+    "httpx>=0.27,<1",
+    "ruff>=0.17.5",
+]

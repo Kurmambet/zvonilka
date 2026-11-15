@@ -1,4 +1,5 @@
 """Compact unittest CLI; failures keep nonzero exit codes, skips stay visible."""
+
 from __future__ import annotations
 
 import argparse
@@ -71,14 +72,18 @@ class CompactResult(unittest.TestResult):
 
     def addUnexpectedSuccess(self, test):
         super().addUnexpectedSuccess(test)
-        self._detail("UNEXPECTED_SUCCESS", test, "Remove expectedFailure or restore the expected behavior")
+        self._detail(
+            "UNEXPECTED_SUCCESS", test, "Remove expectedFailure or restore the expected behavior"
+        )
 
 
 def main(argv=None, *, stream=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--start", default="tests")
     parser.add_argument("--pattern", default="test*.py")
-    parser.add_argument("--tracebacks", action="store_true", help="Full local diagnostics; may contain secrets")
+    parser.add_argument(
+        "--tracebacks", action="store_true", help="Full local diagnostics; may contain secrets"
+    )
     parser.add_argument("--max-details", type=int, default=10)
     parser.add_argument("--require-no-skips", action="store_true")
     args = parser.parse_args(argv)
@@ -89,11 +94,10 @@ def main(argv=None, *, stream=None):
     loader = unittest.TestLoader()
     try:
         suite = loader.discover(args.start, pattern=args.pattern)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 -- Discovery boundary; bounded diagnostics and nonzero exit.
         stream.write(f"DISCOVERY_ERROR {compact(type(exc).__name__)}: {compact(str(exc))}\n")
         return 2
-    result = CompactResult(stream=stream, tracebacks=args.tracebacks,
-                           max_details=args.max_details)
+    result = CompactResult(stream=stream, tracebacks=args.tracebacks, max_details=args.max_details)
     result.startTestRun()
     try:
         suite.run(result)
@@ -110,10 +114,12 @@ def main(argv=None, *, stream=None):
     if len(result.skipped) > 5:
         stream.write(f"SKIPS_OMITTED {len(result.skipped) - 5}\n")
     elapsed = time.monotonic() - started
-    stream.write(f"SUMMARY run={result.testsRun} passed={result.successes} "
-                 f"failures={len(result.failures)} errors={len(result.errors)} "
-                 f"skipped={len(result.skipped)} expected_failures={len(result.expectedFailures)} "
-                 f"unexpected_successes={len(result.unexpectedSuccesses)} seconds={elapsed:.3f}\n")
+    stream.write(
+        f"SUMMARY run={result.testsRun} passed={result.successes} "
+        f"failures={len(result.failures)} errors={len(result.errors)} "
+        f"skipped={len(result.skipped)} expected_failures={len(result.expectedFailures)} "
+        f"unexpected_successes={len(result.unexpectedSuccesses)} seconds={elapsed:.3f}\n"
+    )
     if result.testsRun == 0:
         stream.write("NO_TESTS: discovery matched no tests\n")
         return 2

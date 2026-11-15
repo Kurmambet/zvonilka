@@ -1,11 +1,15 @@
-import asyncio
 import hashlib
 import json
 import unittest
 from uuid import uuid4
 
 from zvonilka.rooms.repository import (
-    Limits, RoomError, RoomRepository, canonical_id, invite_digest, validate_digest,
+    Limits,
+    RoomError,
+    RoomRepository,
+    canonical_id,
+    invite_digest,
+    validate_digest,
 )
 
 
@@ -29,9 +33,15 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual(Limits().participants, 3)
 
     def test_invalid_limits(self):
-        for kwargs in ({"rooms": 0}, {"rooms": True}, {"rooms": 1.5},
-                       {"grace": -1}, {"participants": 4},
-                       {"max_records": 129}, {"invites_per_room": 33}):
+        for kwargs in (
+            {"rooms": 0},
+            {"rooms": True},
+            {"rooms": 1.5},
+            {"grace": -1},
+            {"participants": 4},
+            {"max_records": 129},
+            {"invites_per_room": 33},
+        ):
             with self.subTest(kwargs=kwargs), self.assertRaises(ValueError):
                 Limits(**kwargs)
 
@@ -114,6 +124,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
         class BrokenRedis:
             async def eval(self, *args):
                 raise ConnectionError("unavailable")
+
         with self.assertRaises(ConnectionError):
             await RoomRepository(BrokenRedis()).create(self.actor)
 

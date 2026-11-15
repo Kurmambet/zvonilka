@@ -6,13 +6,17 @@ import unittest
 from uuid import uuid4
 
 from zvonilka.observability.logging import (
-    RepeatFilter, SafeJsonFormatter, configure_logging, log_event,
+    RepeatFilter,
+    SafeJsonFormatter,
+    configure_logging,
+    log_event,
 )
 
 
 def record(level=logging.ERROR, **extras):
-    r = logging.LogRecord("secret-logger-name", level, "/secret/path.py", 1,
-                          "password=%s", ("HIDDEN_PASSWORD",), None)
+    r = logging.LogRecord(
+        "secret-logger-name", level, "/secret/path.py", 1, "password=%s", ("HIDDEN_PASSWORD",), None
+    )
     for k, v in extras.items():
         setattr(r, k, v)
     return r
@@ -23,8 +27,14 @@ class SafeLoggingTests(unittest.TestCase):
         self.formatter = SafeJsonFormatter()
 
     def test_freeform_and_extras_never_emitted(self):
-        r = record(safe_fields={"password": "HIDDEN_PASSWORD", "room_id": "private-room",
-                                "code": "redis_unavailable", "url": "secret-url"})
+        r = record(
+            safe_fields={
+                "password": "HIDDEN_PASSWORD",
+                "room_id": "private-room",
+                "code": "redis_unavailable",
+                "url": "secret-url",
+            }
+        )
         value = self.formatter.format(r)
         self.assertNotIn("HIDDEN_PASSWORD", value)
         self.assertNotIn("private-room", value)
@@ -52,15 +62,23 @@ class SafeLoggingTests(unittest.TestCase):
         class Hostile:
             def __str__(self):
                 raise AssertionError("should not execute")
+
         r = record()
         r.msg = Hostile()
         r.args = (Hostile(),)
         self.assertEqual(json.loads(self.formatter.format(r))["event"], "unexpected_error")
 
     def test_invalid_enum_fields_omitted(self):
-        text = self.formatter.format(record(safe_event="secret-event", safe_fields={
-            "code": "my-secret", "operation": "secret-op", "dependency": "secret-host",
-        }))
+        text = self.formatter.format(
+            record(
+                safe_event="secret-event",
+                safe_fields={
+                    "code": "my-secret",
+                    "operation": "secret-op",
+                    "dependency": "secret-host",
+                },
+            )
+        )
         self.assertNotIn("my-secret", text)
         self.assertNotIn("secret-op", text)
         self.assertNotIn("secret-host", text)
@@ -76,7 +94,9 @@ class SafeLoggingTests(unittest.TestCase):
     def test_invalid_durations_omitted(self):
         for value in (float("nan"), float("inf"), -1, True, "secret", 86400001, 10**500):
             with self.subTest(value=value):
-                parsed = json.loads(self.formatter.format(record(safe_fields={"duration_ms": value})))
+                parsed = json.loads(
+                    self.formatter.format(record(safe_fields={"duration_ms": value}))
+                )
                 self.assertNotIn("duration_ms", parsed)
 
     def test_valid_duration(self):
@@ -87,7 +107,7 @@ class SafeLoggingTests(unittest.TestCase):
         SecretError = type("MySecretToken", (Exception,), {})
         try:
             raise SecretError()
-        except Exception:
+        except SecretError:
             r = record()
             r.exc_info = sys.exc_info()
         text = self.formatter.format(r)
@@ -103,7 +123,8 @@ class SafeLoggingTests(unittest.TestCase):
         now[0] = 30
         r = record()
         self.assertTrue(filter_.filter(r))
-        self.assertEqual(r.suppressed_count, 10)
+        # self.assertEqual(r.suppressed_count, 10)
+        self.assertEqual(getattr(r, "suppressed_count", None), 10)
         self.assertEqual(json.loads(self.formatter.format(r))["suppressed_since_last"], 10)
 
     def test_suppression_memory_is_bounded(self):

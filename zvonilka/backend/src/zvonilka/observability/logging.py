@@ -1,4 +1,5 @@
 """Allowlisted single-line logging. No arbitrary message/exception text emitted."""
+
 from __future__ import annotations
 
 import hashlib
@@ -9,7 +10,7 @@ import sys
 import threading
 import time
 from collections import OrderedDict
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TextIO
 from uuid import UUID
 
@@ -21,28 +22,71 @@ EVENTS = {
     "unexpected_error": "Unexpected internal error",
     "background_task_failed": "Background task failed",
 }
-CODES = frozenset({
-    "room_id_exists", "room_not_found", "room_closed", "room_limit",
-    "owner_room_limit", "pending_limit", "participant_limit", "not_owner",
-    "not_admitted", "overloaded", "stale_generation", "invite_exists",
-    "invite_limit", "invite_history_limit", "invite_not_found", "invite_consumed",
-    "invite_revoked", "invite_expired", "registry_full", "schema_mismatch",
-    "redis_unavailable", "postgres_unavailable", "timeout", "internal_error",
-})
-OPERATIONS = frozenset({"create", "snapshot", "join", "leave", "heartbeat",
-                         "close", "issue_invite", "revoke_invite", "redeem", "sweep"})
+CODES = frozenset(
+    {
+        "room_id_exists",
+        "room_not_found",
+        "room_closed",
+        "room_limit",
+        "owner_room_limit",
+        "pending_limit",
+        "participant_limit",
+        "not_owner",
+        "not_admitted",
+        "overloaded",
+        "stale_generation",
+        "invite_exists",
+        "invite_limit",
+        "invite_history_limit",
+        "invite_not_found",
+        "invite_consumed",
+        "invite_revoked",
+        "invite_expired",
+        "registry_full",
+        "schema_mismatch",
+        "redis_unavailable",
+        "postgres_unavailable",
+        "timeout",
+        "internal_error",
+    }
+)
+OPERATIONS = frozenset(
+    {
+        "create",
+        "snapshot",
+        "join",
+        "leave",
+        "heartbeat",
+        "close",
+        "issue_invite",
+        "revoke_invite",
+        "redeem",
+        "sweep",
+    }
+)
 DEPENDENCIES = frozenset({"redis", "postgres", "turn"})
-EXCEPTIONS = frozenset({"ConnectionError", "TimeoutError", "OSError", "ValueError",
-                        "TypeError", "RuntimeError", "RoomError", "ResponseError",
-                        "AuthenticationError", "CancelledError", "AssertionError"})
+EXCEPTIONS = frozenset(
+    {
+        "ConnectionError",
+        "TimeoutError",
+        "OSError",
+        "ValueError",
+        "TypeError",
+        "RuntimeError",
+        "RoomError",
+        "ResponseError",
+        "AuthenticationError",
+        "CancelledError",
+        "AssertionError",
+    }
+)
 
 
 def _safe_fields(values: object) -> dict:
     if type(values) is not dict:
         return {}
     output = {}
-    for key, allowed in (("code", CODES), ("operation", OPERATIONS),
-                         ("dependency", DEPENDENCIES)):
+    for key, allowed in (("code", CODES), ("operation", OPERATIONS), ("dependency", DEPENDENCIES)):
         value = values.get(key)
         if type(value) is str and value in allowed:
             output[key] = value
@@ -66,8 +110,10 @@ class SafeJsonFormatter(logging.Formatter):
         if type(event) is not str or event not in EVENTS:
             event = "unexpected_error" if record.levelno >= logging.ERROR else "external_event"
         item = {
-            "time": datetime.fromtimestamp(record.created, timezone.utc).isoformat(timespec="milliseconds"),
-            "level": logging.getLevelName(record.levelno) if record.levelno in (10, 20, 30, 40, 50) else "INFO",
+            "time": datetime.fromtimestamp(record.created, UTC).isoformat(timespec="milliseconds"),
+            "level": logging.getLevelName(record.levelno)
+            if record.levelno in (10, 20, 30, 40, 50)
+            else "INFO",
             "event": event,
             "message": EVENTS.get(event, "External library event; free-form text omitted"),
         }
@@ -93,9 +139,15 @@ class RepeatFilter(logging.Filter):
     This is not log rotation or a global traffic limiter. State has a hard cap;
     different error_ref values of one event/code are intentionally grouped.
     """
+
     def __init__(self, interval: float = 30, capacity: int = 256, clock=time.monotonic):
         super().__init__()
-        if not math.isfinite(interval) or interval <= 0 or type(capacity) is not int or capacity < 1:
+        if (
+            not math.isfinite(interval)
+            or interval <= 0
+            or type(capacity) is not int
+            or capacity < 1
+        ):
             raise ValueError("invalid repeat filter configuration")
         self.interval, self.capacity, self.clock = interval, capacity, clock
         self.entries = OrderedDict()
@@ -107,8 +159,13 @@ class RepeatFilter(logging.Filter):
         fields = _safe_fields(getattr(record, "safe_fields", {}))
         event = getattr(record, "safe_event", None)
         event = event if type(event) is str and event in EVENTS else "external_event"
-        key = (record.levelno, event, fields.get("code"), fields.get("operation"),
-               fields.get("dependency"))
+        key = (
+            record.levelno,
+            event,
+            fields.get("code"),
+            fields.get("operation"),
+            fields.get("dependency"),
+        )
         now = self.clock()
         with self.lock:
             old = self.entries.pop(key, None)
@@ -122,8 +179,9 @@ class RepeatFilter(logging.Filter):
         return True
 
 
-def configure_logging(*, stream: TextIO | None = None,
-                      level: int = logging.INFO, repeat_interval: float = 30) -> None:
+def configure_logging(
+    *, stream: TextIO | None = None, level: int = logging.INFO, repeat_interval: float = 30
+) -> None:
     """Call once at service entrypoint; reconfiguration replaces root handlers.
 
     Future uvicorn must use log_config=None and access_log=False. Named library
@@ -143,11 +201,21 @@ def configure_logging(*, stream: TextIO | None = None,
         previous.close()
 
 
-def log_event(logger: logging.Logger, event: str, *, level: int = logging.INFO,
-              exc_info: bool = False, **fields: object) -> None:
+def log_event(
+    logger: logging.Logger,
+    event: str,
+    *,
+    level: int = logging.INFO,
+    exc_info: bool = False,
+    **fields: object,
+) -> None:
     if type(event) is not str or event not in EVENTS:
         raise ValueError("unknown log event")
     if level not in (logging.DEBUG, logging.INFO, logging.WARNING, logging.ERROR, logging.CRITICAL):
         raise ValueError("invalid log level")
-    logger.log(level, "", extra={"safe_event": event, "safe_fields": _safe_fields(fields)},
-               exc_info=exc_info)
+    logger.log(
+        level,
+        "",
+        extra={"safe_event": event, "safe_fields": _safe_fields(fields)},
+        exc_info=exc_info,
+    )
