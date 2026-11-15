@@ -15,6 +15,7 @@ class AuthApiTests(AuthPgFixture):
         from pydantic import SecretStr
         from zvonilka.api import create_app
 
+        assert REDIS_URL is not None
         self.settings.redis_url = SecretStr(REDIS_URL)
         self.asgi = create_app(self.settings)
         self.context = self.asgi.app.router.lifespan_context(self.asgi.app)

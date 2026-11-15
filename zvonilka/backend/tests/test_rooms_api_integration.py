@@ -18,6 +18,7 @@ class RoomApiTests(AuthPgFixture):
         from pydantic import SecretStr
         from zvonilka.api import create_app
 
+        assert REDIS_URL is not None
         self.settings.redis_url = SecretStr(REDIS_URL)
         self.settings.room_registry_key = "zvonilka:room_api_test:" + uuid4().hex
         self.asgi = create_app(self.settings)

@@ -1,13 +1,19 @@
 import unittest
 
 from pydantic import SecretStr, ValidationError
+from pydantic_settings import SettingsConfigDict
 from zvonilka.config import Settings
+
+
+class WithoutDotenv(Settings):
+    # Inherited settings configuration is preserved; only dotenv loading is off.
+    # OS environment is still supported, as with the previous _env_file=None.
+    model_config = SettingsConfigDict(env_file=None)
 
 
 class RoomConfigTests(unittest.TestCase):
     def settings(self, **changes):
-        return Settings(
-            _env_file=None,
+        return WithoutDotenv(
             database_url=SecretStr("postgresql+asyncpg://test:test@localhost/test"),
             jwt_secret=SecretStr("unit-only-secret-" + "x" * 48),
             **changes,

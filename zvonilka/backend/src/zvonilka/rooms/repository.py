@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import secrets
+from collections.abc import Awaitable
 from dataclasses import asdict, dataclass
 from importlib.resources import files
 from typing import Any, Protocol
@@ -11,7 +12,20 @@ from uuid import UUID, uuid4
 
 
 class RedisClient(Protocol):
-    async def eval(self, script: str, numkeys: int, *args: str) -> Any: ...
+    # redis-py shares command annotations between sync and async clients.
+    # Awaitability is checked at the boundary, not assumed from this union.
+    def eval(
+        self, script: str, numkeys: int, *args: str
+    ) -> Awaitable[str | bytes] | str | bytes: ...
+
+
+async def await_eval_result(response: object) -> str | bytes:
+    if not isinstance(response, Awaitable):
+        raise TypeError("room repository requires an asynchronous Redis EVAL")
+    result = await response
+    if not isinstance(result, (str, bytes)):
+        raise TypeError("room EVAL must return a JSON string or bytes")
+    return result
 
 
 class RoomError(Exception):
@@ -87,8 +101,8 @@ class RoomRepository:
             request["actor"] = canonical_id(actor)
         if room_id is not None:
             request["room_id"] = canonical_id(room_id)
-        response = await self.redis.eval(
-            self.script, 1, self.key, json.dumps(request, separators=(",", ":"))
+        response = await await_eval_result(
+            self.redis.eval(self.script, 1, self.key, json.dumps(request, separators=(",", ":")))
         )
         result = json.loads(response)
         if not result["ok"]:

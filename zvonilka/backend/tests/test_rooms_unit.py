@@ -1,10 +1,12 @@
+import asyncio
 import unittest
+from collections.abc import Awaitable
 from datetime import UTC, datetime
 from uuid import uuid4
 
 from zvonilka.rooms.http_errors import STATUSES, room_http_error
 from zvonilka.rooms.invitations import decode_invitation, encode_invitation
-from zvonilka.rooms.repository import RoomError, invite_digest
+from zvonilka.rooms.repository import RedisClient, RoomError, await_eval_result, invite_digest
 from zvonilka.rooms.service import RoomService
 
 
@@ -87,33 +89,33 @@ class RecordingRepository:
     """Boundary double only: these tests do not claim to exercise Redis/Lua."""
 
     def __init__(self):
-        self.calls = []
-        self.result = {}
-        self.error = None
+        self.calls: list[tuple[str, tuple[str, ...]]] = []
+        self.result: dict[str, object] = {}
+        self.error: Exception | None = None
 
-    async def invoke(self, name, *args):
+    async def invoke(self, name: str, *args: str) -> dict[str, object]:
         self.calls.append((name, args))
-        if self.error:
+        if self.error is not None:
             raise self.error
         return self.result
 
-    async def create(self, *args):
-        return await self.invoke("create", *args)
+    async def create(self, actor: str) -> dict[str, object]:
+        return await self.invoke("create", actor)
 
-    async def snapshot(self, *args):
-        return await self.invoke("snapshot", *args)
+    async def snapshot(self, actor: str, room_id: str) -> dict[str, object]:
+        return await self.invoke("snapshot", actor, room_id)
 
-    async def issue_invite(self, *args):
-        return await self.invoke("issue_invite", *args)
+    async def issue_invite(self, actor: str, room_id: str) -> dict[str, object]:
+        return await self.invoke("issue_invite", actor, room_id)
 
-    async def revoke_invite(self, *args):
-        return await self.invoke("revoke_invite", *args)
+    async def revoke_invite(self, actor: str, room_id: str, digest: str) -> dict[str, object]:
+        return await self.invoke("revoke_invite", actor, room_id, digest)
 
-    async def redeem(self, *args):
-        return await self.invoke("redeem", *args)
+    async def redeem(self, actor: str, room_id: str, token: str) -> dict[str, object]:
+        return await self.invoke("redeem", actor, room_id, token)
 
-    async def close(self, *args):
-        return await self.invoke("close", *args)
+    async def close(self, actor: str, room_id: str) -> dict[str, object]:
+        return await self.invoke("close", actor, room_id)
 
 
 class RoomServiceTests(unittest.IsolatedAsyncioTestCase):
@@ -172,3 +174,73 @@ class RoomServiceTests(unittest.IsolatedAsyncioTestCase):
         self.repo.error = ConnectionError("not for HTTP response")
         with self.assertRaises(ConnectionError):
             await self.service.snapshot(self.actor, self.room)
+
+
+class RedisEvalContractTests(unittest.IsolatedAsyncioTestCase):
+    async def test_native_coroutine_string(self):
+        async def reply() -> str:
+            return '{"ok":true}'
+
+        self.assertEqual(await await_eval_result(reply()), '{"ok":true}')
+
+    async def test_native_coroutine_bytes(self):
+        async def reply() -> bytes:
+            return b'{"ok":true}'
+
+        self.assertEqual(await await_eval_result(reply()), b'{"ok":true}')
+
+    async def test_future_is_awaited(self):
+        future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+        future.set_result("future-result")
+        self.assertEqual(await await_eval_result(future), "future-result")
+
+    async def test_custom_awaitable_is_awaited(self):
+        class Reply:
+            def __await__(self):
+                async def value() -> str:
+                    return "custom-result"
+
+                return value().__await__()
+
+        self.assertEqual(await await_eval_result(Reply()), "custom-result")
+
+    async def test_sync_string_and_bytes_rejected(self):
+        for value in ("sync result", b"sync result"):
+            with self.subTest(value=value), self.assertRaisesRegex(TypeError, "asynchronous"):
+                await await_eval_result(value)
+
+    async def test_nonawaitable_objects_rejected(self):
+        for value in (None, 1, {}, object()):
+            with self.subTest(value=value), self.assertRaises(TypeError):
+                await await_eval_result(value)
+
+    async def test_wrong_awaited_result_type_rejected(self):
+        async def reply() -> int:
+            return 123
+
+        with self.assertRaisesRegex(TypeError, "JSON string or bytes"):
+            await await_eval_result(reply())
+
+    async def test_exception_propagates_without_text_rewriting(self):
+        expected = ConnectionError("unit error")
+
+        async def reply() -> str:
+            raise expected
+
+        with self.assertRaises(ConnectionError) as ctx:
+            await await_eval_result(reply())
+        self.assertIs(ctx.exception, expected)
+
+    async def test_shared_command_union_annotation_is_supported(self):
+        class SharedCommand:
+            def eval(self, script: str, numkeys: int, *keys_and_args: str) -> Awaitable[str] | str:
+                async def reply() -> str:
+                    return "shared-command-result"
+
+                return reply()
+
+        client: RedisClient = SharedCommand()
+        self.assertEqual(
+            await await_eval_result(client.eval("unit-script", 0)),
+            "shared-command-result",
+        )

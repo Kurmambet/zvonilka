@@ -82,10 +82,10 @@ EXCEPTIONS = frozenset(
 )
 
 
-def _safe_fields(values: object) -> dict:
+def _safe_fields(values: object) -> dict[str, object]:
     if type(values) is not dict:
         return {}
-    output = {}
+    output: dict[str, object] = {}
     for key, allowed in (("code", CODES), ("operation", OPERATIONS), ("dependency", DEPENDENCIES)):
         value = values.get(key)
         if type(value) is str and value in allowed:
@@ -97,8 +97,15 @@ def _safe_fields(values: object) -> dict:
         except ValueError:
             pass
     value = values.get("duration_ms")
-    if type(value) in (int, float) and 0 <= value <= 86400000 and math.isfinite(value):
+
+    if (
+        isinstance(value, (int, float))
+        and type(value) in (int, float)
+        and 0 <= value <= 86400000
+        and math.isfinite(value)
+    ):
         output["duration_ms"] = round(value, 3)
+
     return output
 
 
@@ -109,7 +116,7 @@ class SafeJsonFormatter(logging.Formatter):
         event = getattr(record, "safe_event", None)
         if type(event) is not str or event not in EVENTS:
             event = "unexpected_error" if record.levelno >= logging.ERROR else "external_event"
-        item = {
+        item: dict[str, object] = {
             "time": datetime.fromtimestamp(record.created, UTC).isoformat(timespec="milliseconds"),
             "level": logging.getLevelName(record.levelno)
             if record.levelno in (10, 20, 30, 40, 50)

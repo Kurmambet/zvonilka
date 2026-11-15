@@ -34,7 +34,7 @@ class CompactResult(unittest.TestResult):
 
     def _exc_info_to_string(self, err, test):
         if self.tracebacks:
-            return super()._exc_info_to_string(err, test)
+            return "".join(traceback.format_exception(err[0], err[1], err[2]))
         kind, value, tb = err
         frames = traceback.extract_tb(tb)
         project_frames = [f for f in frames if "unittest" not in Path(f.filename).parts]

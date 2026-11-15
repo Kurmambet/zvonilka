@@ -20,7 +20,9 @@ def encode_invitation(room_id: UUID, token: str) -> str:
     return f"zv1.{room_id}.{token}"
 
 
-def decode_invitation(value: str) -> Invitation:
+def decode_invitation(value: object) -> Invitation:
+    # This is an external-input parser: accepting object makes its actual
+    # rejection of non-string values part of the public typed contract.
     if not isinstance(value, str) or not 1 <= len(value) <= 128:
         raise ValueError("invalid invitation")
     parts = value.split(".")
