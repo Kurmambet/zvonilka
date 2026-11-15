@@ -1,0 +1,16 @@
+[build-system]
+requires = ["hatchling>=1.26,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "zvonilka-backend"
+version = "0.2.0.dev0"
+description = "Zvonilka room repository implementation, not yet a runnable API"
+requires-python = ">=3.12"
+dependencies = ["redis>=5.2,<7"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/zvonilka"]
+
+[tool.ruff]
+line-length = 100
