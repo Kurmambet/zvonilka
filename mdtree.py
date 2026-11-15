@@ -84,19 +84,17 @@ DEFAULT_CONFIG = {
         "dev-dist",
     ],
     "skip_content_dirs": [
-        "alembic/versions",
-        "backend/alembic",
+        # "alembic/versions",
+        # "backend/alembic",
         "node_modules",
         ".vscode",
         "public",
         ".venv",
     ],
     "skip_content_files": [
-        # "BankAccount.py",
         ".dockerignore",
         "uv.lock",
         ".gitignore",
-        "alembic.ini",
         "README.md",
         "README",
         "notes.txt",
@@ -105,21 +103,6 @@ DEFAULT_CONFIG = {
         "tsconfig.node.json",
         "tsconfig.json",
         "tsconfig.app.json",
-        "tree.py",
-        "docker-compose.dev.yml",
-        # "Dockerfile",
-        # ".env.example",
-        "seed_messages.py",
-        "generate_secret.py",
-        "pyproject.toml",
-        "__init__.py",
-        "rate_limiter.py",
-        "exceptions.py",
-        "useVideoRecorder.ts",
-        "useVoiceRecorder.ts",
-        "useAuth.ts",
-        "player.ts",
-        "tailwind.config.ts",
     ],
     "include_extensions": [
         ".py",
@@ -260,14 +243,10 @@ def is_secret_identifier(identifier):
     return False
 
 
-_LINE_KV_RE = re.compile(
-    r"^([ \t]*)([\'\"]?)([A-Za-z_][A-Za-z0-9_]*)\2([ \t]*[:=][ \t]*)(.*)$"
-)
+_LINE_KV_RE = re.compile(r"^([ \t]*)([\'\"]?)([A-Za-z_][A-Za-z0-9_]*)\2([ \t]*[:=][ \t]*)(.*)$")
 _QUOTED_VALUE_RE = re.compile(r"^([\'\"])(.*)\1(.*)$")
 _BARE_TOKEN_RE = re.compile(r"^(\$\{[^}]*\}|\$\w+|[^\s,;#]+)(.*)$")
-_CODE_REF_RE = re.compile(
-    r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*|\[[^\]\n]*\])+$"
-)
+_CODE_REF_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*|\[[^\]\n]*\])+$")
 
 
 def is_code_reference(token):
@@ -499,15 +478,11 @@ def generate_tree(root_path="."):
                 lines.extend(build_tree(os.path.join(current_dir, name), new_prefix))
         return lines
 
-    root_name = (
-        "./" if root_path == "." else f"{os.path.basename(os.path.abspath(root_path))}/"
-    )
+    root_name = "./" if root_path == "." else f"{os.path.basename(os.path.abspath(root_path))}/"
     return "\n".join([root_name] + build_tree(root_path))
 
 
-def generate_file_contents(
-    root_path=".", clean=False, use_keywords=True, use_format_regex=True
-):
+def generate_file_contents(root_path=".", clean=False, use_keywords=True, use_format_regex=True):
     content_lines = []
     for root, dirs, files in os.walk(root_path):
         dirs[:] = [d for d in dirs if not dir_is_excluded(d, os.path.join(root, d))]
@@ -576,9 +551,7 @@ def run_full_mode(clean=False, use_keywords=True, use_format_regex=True):
     size = os.path.getsize(OUTPUT_FILE)
     with open(OUTPUT_FILE, "r", encoding="utf-8") as f:
         full_text = f.read()
-    print(
-        f"SUCCESS! Size: {size / 1024:.2f} KB, tokens ({TOKEN_MODE}): {count_tokens(full_text)}"
-    )
+    print(f"SUCCESS! Size: {size / 1024:.2f} KB, tokens ({TOKEN_MODE}): {count_tokens(full_text)}")
 
 
 class Node:
@@ -777,9 +750,7 @@ def build_sparse_tree(root):
         return any(has_selected_descendant(c) for c in node.children)
 
     def walk(node, prefix=""):
-        relevant = [
-            c for c in node.children if c.selected or has_selected_descendant(c)
-        ]
+        relevant = [c for c in node.children if c.selected or has_selected_descendant(c)]
         count = len(relevant)
         for i, c in enumerate(relevant):
             is_last = i == count - 1
@@ -867,9 +838,7 @@ def run_interactive_mode():
         mode = input("Content mode: [c]lean or [r]aw? [c/r]: ").strip().lower()
         clean = mode != "r"
         use_keywords = (
-            input("Redact secrets by keyword (SECRET/TOKEN/PASSWORD/...)? [Y/n]: ")
-            .strip()
-            .lower()
+            input("Redact secrets by keyword (SECRET/TOKEN/PASSWORD/...)? [Y/n]: ").strip().lower()
             != "n"
         )
         use_format_regex = (
@@ -935,9 +904,7 @@ def run_interactive_mode():
             f"Пропущено (в skip_content_files/skip_content_dirs/недопустимое расширение): {', '.join(skipped)}"
         )
 
-    save = (
-        input("Save this file selection as a reusable profile? [y/N]: ").strip().lower()
-    )
+    save = input("Save this file selection as a reusable profile? [y/N]: ").strip().lower()
     if save == "y":
         save_profile(selected_files, clean, use_keywords, use_format_regex)
 

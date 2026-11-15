@@ -17,6 +17,7 @@ wheels/
 .ruff_cache/
 dist/
 node_modules/
-PROMPT.md
+PROMPT*.md
 project_structure.md
 mdtree_config.json
+temp/
