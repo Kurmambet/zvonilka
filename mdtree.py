@@ -121,6 +121,7 @@ DEFAULT_CONFIG = {
         ".dockerignore",
         "Dockerfile",
         ".tsx",
+        ".lua",
     ],
     "exclude_extensions": [
         ".woff2",
@@ -408,6 +409,7 @@ LANG_MAP = {
     ".md": "markdown",
     "Dockerfile": "dockerfile",
     ".tsx": "tsx",
+    ".lua": "lua",
 }
 
 

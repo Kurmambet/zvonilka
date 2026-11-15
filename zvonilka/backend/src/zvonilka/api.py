@@ -34,6 +34,8 @@ from .rooms.http_errors import room_http_error
 from .rooms.repository import RoomError, RoomRepository
 from .rooms.router import room_router
 from .rooms.service import RoomService
+from .signaling.router import signaling_router
+from .signaling.service import SignalingService
 
 bearer = HTTPBearer(auto_error=False)
 
@@ -96,6 +98,11 @@ def create_app(settings: Settings | None = None):
                 redis, limits=settings.room_limits(), key=settings.room_registry_key
             )
             app.state.rooms = RoomService(app.state.room_repository)
+            app.state.signaling = SignalingService(
+                app.state.auth,
+                app.state.room_repository,
+                presence_ttl=settings.room_presence_ttl_seconds,
+            )
             started = True
             log_event(logging.getLogger("zvonilka.api"), "service_started")
             yield
@@ -251,6 +258,7 @@ def create_app(settings: Settings | None = None):
         return Response(status_code=204)
 
     app.include_router(room_router(principal, rate))
+    app.include_router(signaling_router())
 
     # Wrapper is outside Starlette ServerErrorMiddleware: unknown failures cannot
     # leak its plain-text traceback. That middleware may already send generic 500.
