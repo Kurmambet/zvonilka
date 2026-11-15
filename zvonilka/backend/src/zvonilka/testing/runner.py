@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 import time
 import traceback
 import unittest
 from pathlib import Path
+
+from zvonilka.observability.logging import configure_logging
 
 
 def compact(text: str, limit: int = 400) -> str:
@@ -89,6 +92,9 @@ def main(argv=None, *, stream=None):
     args = parser.parse_args(argv)
     if not 1 <= args.max_details <= 100:
         parser.error("--max-details must be in 1..100")
+
+    configure_logging(level=logging.WARNING)
+
     stream = stream if stream is not None else sys.stderr
     started = time.monotonic()
     loader = unittest.TestLoader()

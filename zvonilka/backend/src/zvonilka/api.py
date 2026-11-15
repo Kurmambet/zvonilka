@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 from uuid import UUID
 
@@ -28,6 +29,11 @@ from .auth.service import AuthService, Principal
 from .config import Settings
 from .db import create_database
 from .http_boundary import SafeHttpBoundary
+from .observability.logging import log_event
+from .rooms.http_errors import room_http_error
+from .rooms.repository import RoomError, RoomRepository
+from .rooms.router import room_router
+from .rooms.service import RoomService
 
 bearer = HTTPBearer(auto_error=False)
 
@@ -45,6 +51,7 @@ def create_app(settings: Settings | None = None):
             socket_connect_timeout=2,
             decode_responses=True,
         )
+        started = False
         try:
             try:
                 async with engine.connect() as connection:
@@ -84,12 +91,21 @@ def create_app(settings: Settings | None = None):
             )
             app.state.limiter = AuthRateLimiter(redis, prefix=settings.rate_limit_prefix)
             app.state.engine, app.state.redis = engine, redis
+            app.state.settings = settings
+            app.state.room_repository = RoomRepository(
+                redis, limits=settings.room_limits(), key=settings.room_registry_key
+            )
+            app.state.rooms = RoomService(app.state.room_repository)
+            started = True
+            log_event(logging.getLogger("zvonilka.api"), "service_started")
             yield
         finally:
+            if started:
+                log_event(logging.getLogger("zvonilka.api"), "service_stopped")
             await redis.aclose()
             await engine.dispose()
 
-    app = FastAPI(title="Zvonilka", version="0.4.0.dev0", lifespan=lifespan, debug=False)
+    app = FastAPI(title="Zvonilka", version="0.5.0.dev0", lifespan=lifespan, debug=False)
 
     def error(request, status, code):
         headers = {"WWW-Authenticate": "Bearer"} if status == 401 else {}
@@ -123,10 +139,6 @@ def create_app(settings: Settings | None = None):
     @app.exception_handler(DBAPIError)
     async def database_error(request: Request, exc: DBAPIError):
         # Details are deliberately not returned or interpolated into logs.
-        import logging
-
-        from zvonilka.observability.logging import log_event
-
         log_event(
             logging.getLogger("zvonilka.api"),
             "dependency_unavailable",
@@ -140,10 +152,6 @@ def create_app(settings: Settings | None = None):
 
     @app.exception_handler(RedisError)
     async def redis_error(request: Request, exc: RedisError):
-        import logging
-
-        from zvonilka.observability.logging import log_event
-
         log_event(
             logging.getLogger("zvonilka.api"),
             "dependency_unavailable",
@@ -153,7 +161,22 @@ def create_app(settings: Settings | None = None):
             request_id=request.state.request_id,
             exc_info=True,
         )
-        return error(request, 503, "rate_limit_unavailable")
+        return error(request, 503, "redis_unavailable")
+
+    @app.exception_handler(RoomError)
+    async def room_error(request: Request, exc: RoomError):
+        status, code = room_http_error(exc.code)
+        if status >= 500:
+            log_event(
+                logging.getLogger("zvonilka.api"),
+                "unexpected_error" if status == 500 else "dependency_unavailable",
+                level=logging.ERROR,
+                code=code,
+                dependency="redis",
+                request_id=request.state.request_id,
+                exc_info=True,
+            )
+        return error(request, status, code)
 
     async def principal(
         request: Request, credentials: HTTPAuthorizationCredentials | None = Depends(bearer)
@@ -226,6 +249,8 @@ def create_app(settings: Settings | None = None):
             user, body.current_password.get_secret_value(), body.new_password.get_secret_value()
         )
         return Response(status_code=204)
+
+    app.include_router(room_router(principal, rate))
 
     # Wrapper is outside Starlette ServerErrorMiddleware: unknown failures cannot
     # leak its plain-text traceback. That middleware may already send generic 500.
