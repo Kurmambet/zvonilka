@@ -48,6 +48,10 @@ ErrorCode = Literal[
     "heartbeat_timeout",
     "connection_replaced",
     "server_shutdown",
+    "peer_unavailable",
+    "peer_replaced",
+    "peer_overloaded",
+    "invalid_target",
 ]
 
 
@@ -149,9 +153,121 @@ class Participants(Message):
         return self
 
 
+MAX_SDP_BYTES = 16384
+MAX_ICE_BYTES = 2048
+
+
+def bounded_utf8(value: str, limit: int) -> str:
+    if len(value.encode("utf-8")) > limit:
+        raise ValueError("text exceeds byte limit")
+    return value
+
+
+# Opaque payloads: enforce size, not SDP grammar or negotiation state.
+Sdp = Annotated[str, StringConstraints(min_length=1, max_length=MAX_SDP_BYTES)]
+
+
+class IceCandidateData(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    candidate: str = Field(min_length=1, max_length=MAX_ICE_BYTES, repr=False)
+    sdp_mid: str | None = Field(default=None, max_length=64)
+    sdp_mline_index: int | None = Field(default=None, ge=0, le=65535, strict=True)
+    username_fragment: str | None = Field(default=None, max_length=256)
+
+    @field_validator("candidate")
+    @classmethod
+    def bounded_candidate(cls, value: str) -> str:
+        return bounded_utf8(value, MAX_ICE_BYTES)
+
+    @model_validator(mode="after")
+    def media_section(self) -> "IceCandidateData":
+        if self.sdp_mid is None and self.sdp_mline_index is None:
+            raise ValueError("candidate needs a media section")
+        return self
+
+
+# The client chooses a destination, never the identity forwarded as sender.
+class DirectedMessage(Message):
+    request_id: UUID
+    generation: UUID
+    target_user_id: UUID
+    target_generation: UUID
+
+
+class Offer(DirectedMessage):
+    type: Literal["offer"]
+    sdp: Sdp = Field(repr=False)
+
+    @field_validator("sdp")
+    @classmethod
+    def bounded_sdp(cls, value: str) -> str:
+        return bounded_utf8(value, MAX_SDP_BYTES)
+
+
+class Answer(DirectedMessage):
+    type: Literal["answer"]
+    sdp: Sdp = Field(repr=False)
+
+    @field_validator("sdp")
+    @classmethod
+    def bounded_sdp(cls, value: str) -> str:
+        return bounded_utf8(value, MAX_SDP_BYTES)
+
+
+class IceCandidate(DirectedMessage):
+    type: Literal["ice_candidate"]
+    # Null, rather than an empty candidate object, explicitly ends gathering.
+    candidate: IceCandidateData | None = Field(repr=False)
+
+
+class RelayedMessage(Message):
+    request_id: UUID
+    room_id: UUID
+    from_user_id: UUID
+    from_generation: UUID
+    target_generation: UUID
+
+
+class RelayedOffer(RelayedMessage):
+    type: Literal["offer"]
+    sdp: Sdp = Field(repr=False)
+
+    @field_validator("sdp")
+    @classmethod
+    def bounded_sdp(cls, value: str) -> str:
+        return bounded_utf8(value, MAX_SDP_BYTES)
+
+
+class RelayedAnswer(RelayedMessage):
+    type: Literal["answer"]
+    sdp: Sdp = Field(repr=False)
+
+    @field_validator("sdp")
+    @classmethod
+    def bounded_sdp(cls, value: str) -> str:
+        return bounded_utf8(value, MAX_SDP_BYTES)
+
+
+class RelayedIceCandidate(RelayedMessage):
+    type: Literal["ice_candidate"]
+    candidate: IceCandidateData | None = Field(repr=False)
+
+
+RelayMessage = Offer | Answer | IceCandidate
+ActiveMessage = Heartbeat | Offer | Answer | IceCandidate
+active_message_adapter = TypeAdapter(Annotated[ActiveMessage, Field(discriminator="type")])
 client_message_adapter = TypeAdapter(
-    Annotated[Authenticate | Heartbeat, Field(discriminator="type")]
+    Annotated[Authenticate | Heartbeat | Offer | Answer | IceCandidate, Field(discriminator="type")]
 )
 server_message_adapter = TypeAdapter(
-    Annotated[Joined | HeartbeatAck | Participants | Error, Field(discriminator="type")]
+    Annotated[
+        Joined
+        | HeartbeatAck
+        | Participants
+        | Error
+        | RelayedOffer
+        | RelayedAnswer
+        | RelayedIceCandidate,
+        Field(discriminator="type"),
+    ]
 )

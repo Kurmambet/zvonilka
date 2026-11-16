@@ -3,18 +3,28 @@
 import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from typing import Literal
 from uuid import UUID, uuid4
 
 from .schemas import ErrorCode, Joined, OnlinePeer, Participants
 
+Delivery = Literal[
+    "sent", "sender_stale", "invalid_target", "peer_unavailable", "peer_replaced", "peer_overloaded"
+]
+
 
 class Subscriber:
     def __init__(
-        self, generation: UUID, send: Callable[[str], None], stop: Callable[[ErrorCode], None]
+        self,
+        generation: UUID,
+        send: Callable[[str], None],
+        stop: Callable[[ErrorCode], None],
+        ready: Callable[[], bool] | None = None,
     ):
         self.generation = generation
         self.send = send
         self.stop = stop
+        self.ready = ready
 
 
 @dataclass(slots=True)
@@ -70,6 +80,7 @@ class ParticipantsHub:
         send: Callable[[str], None],
         stop: Callable[[ErrorCode], None],
         admission: Callable[[], Awaitable[Joined]],
+        ready: Callable[[], bool] | None = None,
     ) -> None:
         room = self._rooms.setdefault(room_id, Room())
         room.users += 1
@@ -85,7 +96,7 @@ class ParticipantsHub:
                 # No await here: FIFO gives this socket joined before its first snapshot.
                 send(joined.model_dump_json())
                 members = dict(room.members)
-                members[user_id] = Subscriber(generation, send, stop)
+                members[user_id] = Subscriber(generation, send, stop, ready)
                 self._commit(room_id, room, members)
         finally:
             room.users -= 1
@@ -104,3 +115,35 @@ class ParticipantsHub:
         self._commit(room_id, room, members)
         self._discard_empty(room_id, room)
         return True
+
+    def deliver(
+        self,
+        room_id: UUID,
+        sender_id: UUID,
+        sender_generation: UUID,
+        target_id: UUID,
+        target_generation: UUID,
+        payload: str,
+    ) -> Delivery:
+        # Lookup, generation checks and enqueue contain no await: one-process fence.
+        room = self._rooms.get(room_id)
+        sender = room.members.get(sender_id) if room is not None else None
+        if sender is None or sender.generation != sender_generation:
+            return "sender_stale"
+        if sender.ready is not None and not sender.ready():
+            return "sender_stale"
+        if sender_id == target_id:
+            return "invalid_target"
+        target = room.members.get(target_id) if room is not None else None
+        if target is None:
+            return "peer_unavailable"
+        if target.generation != target_generation:
+            return "peer_replaced"
+        if target.ready is not None and not target.ready():
+            return "peer_unavailable"
+        try:
+            target.send(payload)
+        except Exception:  # noqa: BLE001 -- Do not propagate another socket's failure.
+            target.stop("overloaded")
+            return "peer_overloaded"
+        return "sent"

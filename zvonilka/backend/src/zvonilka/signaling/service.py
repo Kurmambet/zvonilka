@@ -13,7 +13,24 @@ from typing import Protocol
 from uuid import UUID, uuid4
 
 from .participants import ParticipantsHub
-from .schemas import Authenticate, ErrorCode, Heartbeat, HeartbeatAck, Joined
+from .schemas import (
+    ActiveMessage,
+    Answer,
+    Authenticate,
+    Error,
+    ErrorCode,
+    Heartbeat,
+    HeartbeatAck,
+    IceCandidate,
+    Joined,
+    Offer,
+    RelayedAnswer,
+    RelayedIceCandidate,
+    RelayedMessage,
+    RelayedOffer,
+    RelayMessage,
+    active_message_adapter,
+)
 
 
 class Identity(Protocol):
@@ -42,6 +59,9 @@ class Policy:
     shutdown_timeout: float = 10.0
     max_message_bytes: int = 16384
     max_connections: int = 32
+    # Allow ICE bursts while bounding sustained signaling independently of heartbeat.
+    relay_rate: int = 32
+    relay_burst: int = 64
 
     def __post_init__(self) -> None:
         for value in (
@@ -55,7 +75,12 @@ class Policy:
         ):
             if not math.isfinite(value) or value <= 0:
                 raise ValueError("timeouts must be finite and positive")
-        for value in (self.max_message_bytes, self.max_connections):
+        for value in (
+            self.max_message_bytes,
+            self.max_connections,
+            self.relay_rate,
+            self.relay_burst,
+        ):
             if type(value) is not int or value < 1:
                 raise ValueError("limits must be positive integers")
 
@@ -96,6 +121,8 @@ class Attempt:
     join_attempted: bool = False
     connection: Connection = field(default_factory=Connection)
     next_heartbeat_at: float = 0.0
+    relay_tokens: float = 0.0
+    relay_updated_at: float | None = None
 
 
 @dataclass(slots=True)
@@ -120,6 +147,13 @@ def parse_authentication(raw: str) -> Authenticate:
 def parse_heartbeat(raw: str) -> Heartbeat:
     try:
         return Heartbeat.model_validate_json(raw)
+    except (ValueError, RecursionError):
+        raise Rejected("invalid_message") from None
+
+
+def parse_active(raw: str) -> ActiveMessage:
+    try:
+        return active_message_adapter.validate_json(raw)
     except (ValueError, RecursionError):
         raise Rejected("invalid_message") from None
 
@@ -264,6 +298,85 @@ class SignalingService:
                 request_id=message.request_id,
                 generation=attempt.generation,
             )
+
+    def is_current(self, attempt: Attempt) -> bool:
+        gate = self._gates.get((attempt.user_id, attempt.room_id))
+        return (
+            not self.closing
+            and not attempt.connection.stopped.is_set()
+            and gate is not None
+            and gate.current is attempt
+            and monotonic() < attempt.deadline
+        )
+
+    def relay(self, attempt: Attempt, message: RelayMessage) -> Error | None:
+        attempt.connection.check()
+        if self.closing:
+            raise Rejected("server_shutdown", 1012)
+        if message.generation != attempt.generation:
+            raise Rejected("stale_generation")
+        if monotonic() >= attempt.deadline:
+            raise Rejected("heartbeat_timeout")
+        if not self.is_current(attempt):
+            raise Rejected("stale_generation")
+        now = monotonic()
+        if attempt.relay_updated_at is None:
+            attempt.relay_tokens = float(self.policy.relay_burst)
+        else:
+            attempt.relay_tokens = min(
+                float(self.policy.relay_burst),
+                attempt.relay_tokens + (now - attempt.relay_updated_at) * self.policy.relay_rate,
+            )
+        attempt.relay_updated_at = now
+        if attempt.relay_tokens < 1:
+            raise Rejected("rate_limited")
+        attempt.relay_tokens -= 1
+        common = {
+            "version": 1,
+            "type": message.type,
+            "request_id": message.request_id,
+            "room_id": attempt.room_id,
+            "from_user_id": attempt.user_id,
+            "from_generation": attempt.generation,
+            "target_generation": message.target_generation,
+        }
+        envelope: RelayedMessage
+        if isinstance(message, Offer):
+            envelope = RelayedOffer.model_validate({**common, "sdp": message.sdp})
+        elif isinstance(message, Answer):
+            envelope = RelayedAnswer.model_validate({**common, "sdp": message.sdp})
+        elif isinstance(message, IceCandidate):
+            envelope = RelayedIceCandidate.model_validate(
+                {**common, "candidate": message.candidate}
+            )
+        else:
+            raise TypeError("unsupported relay message")
+        payload = envelope.model_dump_json()
+        # The server envelope adds metadata; check its byte size before touching the target queue.
+        if len(payload.encode("utf-8")) > self.policy.max_message_bytes:
+            return Error(
+                version=1,
+                type="error",
+                request_id=message.request_id,
+                code="message_too_large",
+                fatal=False,
+            )
+        result = self.participants.deliver(
+            attempt.room_id,
+            attempt.user_id,
+            attempt.generation,
+            message.target_user_id,
+            message.target_generation,
+            payload,
+        )
+        if result == "sender_stale":
+            raise Rejected("stale_generation")
+        if result != "sent":
+            return Error(
+                version=1, type="error", request_id=message.request_id, code=result, fatal=False
+            )
+        # Signaling never renews the presence lease; heartbeat remains mandatory.
+        return None
 
     async def leave(self, attempt: Attempt) -> None:
         try:

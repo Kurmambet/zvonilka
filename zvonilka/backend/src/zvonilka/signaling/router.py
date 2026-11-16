@@ -16,15 +16,15 @@ from zvonilka.auth.errors import AuthError
 from zvonilka.observability.logging import log_event
 from zvonilka.rooms.repository import RoomError
 
-from .schemas import Error, ErrorCode
+from .schemas import Error, ErrorCode, Heartbeat
 from .sender import SocketWriter
 from .service import (
     Attempt,
     Connection,
     Rejected,
     SignalingService,
+    parse_active,
     parse_authentication,
-    parse_heartbeat,
 )
 
 logger = logging.getLogger("zvonilka.signaling")
@@ -108,6 +108,7 @@ async def join_and_publish(
         writer.send,
         attempt.connection.stop,
         partial(service.join, attempt, request_id),
+        ready=partial(service.is_current, attempt),
     )
 
 
@@ -210,14 +211,21 @@ def signaling_router() -> APIRouter:
                         )
                 except TimeoutError:
                     raise Rejected("heartbeat_timeout") from None
-                heartbeat = parse_heartbeat(raw)
+                active = parse_active(raw)
                 del raw
-                request_id = heartbeat.request_id
-                async with asyncio.timeout(service.policy.operation_timeout):
-                    ack = await interrupted(
-                        connection, partial(service.heartbeat, current, heartbeat)
-                    )
-                writer.send(ack.model_dump_json())
+                request_id = active.request_id
+                if isinstance(active, Heartbeat):
+                    operation = "heartbeat"
+                    async with asyncio.timeout(service.policy.operation_timeout):
+                        ack = await interrupted(
+                            connection, partial(service.heartbeat, current, active)
+                        )
+                    writer.send(ack.model_dump_json())
+                else:
+                    operation = "relay"
+                    error = service.relay(current, active)
+                    if error is not None:
+                        writer.send(error.model_dump_json())
 
         except WebSocketDisconnect:
             pass
