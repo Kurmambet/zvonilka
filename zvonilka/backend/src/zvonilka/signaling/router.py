@@ -17,6 +17,7 @@ from zvonilka.observability.logging import log_event
 from zvonilka.rooms.repository import RoomError
 
 from .schemas import Error, ErrorCode
+from .sender import SocketWriter
 from .service import (
     Attempt,
     Connection,
@@ -87,20 +88,14 @@ async def close_socket(websocket: WebSocket, timeout: float, code: int) -> None:
         pass
 
 
-async def send_error(
-    websocket: WebSocket,
-    service: SignalingService,
+def send_error(
+    writer: SocketWriter,
     code: ErrorCode,
     request_id: UUID | None,
     close_code: int,
 ) -> None:
     response = Error(version=1, type="error", request_id=request_id, code=code, fatal=True)
-    try:
-        async with asyncio.timeout(service.policy.send_timeout):
-            await websocket.send_text(response.model_dump_json())
-    except (OSError, RuntimeError, TimeoutError, WebSocketDisconnect):
-        pass
-    await close_socket(websocket, service.policy.send_timeout, close_code)
+    writer.request_close(close_code, final_message=response.model_dump_json())
 
 
 async def cleanup(service: SignalingService, attempt: Attempt | None) -> None:
@@ -149,13 +144,21 @@ def signaling_router() -> APIRouter:
         attempt: Attempt | None = None
         request_id: UUID | None = None
         accepted = False
-        cancelled = False
+        writer: SocketWriter | None = None
         operation_dependency = "postgres"
         operation = "join"
         try:
             async with asyncio.timeout(service.policy.send_timeout):
                 await websocket.accept()
             accepted = True
+            writer = SocketWriter(
+                websocket,
+                connection,
+                max_message_bytes=service.policy.max_message_bytes,
+                send_timeout=service.policy.send_timeout,
+                close_timeout=service.policy.send_timeout,
+            )
+            writer.start()
             try:
                 async with asyncio.timeout(service.policy.auth_timeout):
                     raw = await interrupted(
@@ -183,10 +186,7 @@ def signaling_router() -> APIRouter:
             remaining = attempt.deadline - monotonic()
             if remaining <= 0:
                 raise Rejected("dependency_unavailable", 1013)
-            async with asyncio.timeout(min(service.policy.send_timeout, remaining)):
-                await interrupted(
-                    connection, partial(websocket.send_text, response.model_dump_json())
-                )
+            writer.send(response.model_dump_json())
             operation = "heartbeat"
             while True:
                 request_id = None
@@ -208,26 +208,20 @@ def signaling_router() -> APIRouter:
                     ack = await interrupted(
                         connection, partial(service.heartbeat, current, heartbeat)
                     )
-                async with asyncio.timeout(service.policy.send_timeout):
-                    await interrupted(
-                        connection, partial(websocket.send_text, ack.model_dump_json())
-                    )
+                writer.send(ack.model_dump_json())
 
         except WebSocketDisconnect:
             pass
-        except asyncio.CancelledError:
-            cancelled = True
-            raise
         except Rejected as exc:
-            if accepted:
+            if writer is not None:
                 error_request_id = request_id
                 if exc.code in {"connection_replaced", "server_shutdown"}:
                     error_request_id = None
-                await send_error(websocket, service, exc.code, error_request_id, exc.close_code)
+                send_error(writer, exc.code, error_request_id, exc.close_code)
         except AuthError as exc:
             code: ErrorCode = "rate_limited" if exc.code == "rate_limited" else "invalid_access"
-            if accepted:
-                await send_error(websocket, service, code, request_id, 1008)
+            if writer is not None:
+                send_error(writer, code, request_id, 1008)
         except RoomError as exc:
             code = ROOM_ERRORS.get(exc.code, "internal_error")
             if code == "dependency_unavailable":
@@ -240,11 +234,11 @@ def signaling_router() -> APIRouter:
                 )
             elif code == "internal_error":
                 log_event(logger, "unexpected_error", code="internal_error", operation=operation)
-            if accepted:
+            if writer is not None:
                 close_code = 1013 if code == "dependency_unavailable" else 1008
                 if code == "internal_error":
                     close_code = 1011
-                await send_error(websocket, service, code, request_id, close_code)
+                send_error(writer, code, request_id, close_code)
         except (RedisError, DBAPIError, TimeoutError) as exc:
             dependency = "redis"
             if isinstance(exc, DBAPIError):
@@ -258,19 +252,24 @@ def signaling_router() -> APIRouter:
                 code="timeout" if isinstance(exc, TimeoutError) else f"{dependency}_unavailable",
                 operation=operation,
             )
-            if accepted:
-                await send_error(websocket, service, "dependency_unavailable", request_id, 1013)
+            if writer is not None:
+                send_error(writer, "dependency_unavailable", request_id, 1013)
         except OSError:
             pass
         except Exception:  # noqa: BLE001 -- WS boundary; never emit raw input or exception text.
             log_event(logger, "unexpected_error", code="internal_error", operation=operation)
-            if accepted:
-                await send_error(websocket, service, "internal_error", request_id, 1011)
+            if writer is not None:
+                send_error(writer, "internal_error", request_id, 1011)
         finally:
             try:
-                if accepted and not cancelled:
-                    await close_socket(websocket, service.policy.send_timeout, 1000)
-                await cleanup(service, attempt)
+                with anyio.CancelScope(shield=True):
+                    try:
+                        if writer is not None:
+                            await writer.aclose()
+                        elif accepted:
+                            await close_socket(websocket, service.policy.send_timeout, 1000)
+                    finally:
+                        await cleanup(service, attempt)
             finally:
                 service.release(connection)
 
