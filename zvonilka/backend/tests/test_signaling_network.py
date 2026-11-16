@@ -12,7 +12,18 @@ from signaling_test_support import StubAuth, StubRooms, authentication
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed
 from zvonilka.signaling.router import signaling_router
+from zvonilka.signaling.schemas import Participants
 from zvonilka.signaling.service import SignalingService
+
+
+async def receive_application(ws) -> dict:
+    while True:
+        message = json.loads(await ws.recv())
+        if not isinstance(message, dict):
+            raise TypeError("server message must be an object")
+        if message.get("type") != "participants":
+            return message
+        Participants.model_validate(message)
 
 
 class SignalingNetworkTests(unittest.IsolatedAsyncioTestCase):
@@ -65,7 +76,7 @@ class SignalingNetworkTests(unittest.IsolatedAsyncioTestCase):
         async with asyncio.timeout(5):
             async with connect(self.url) as ws:
                 await ws.send(json.dumps(authentication(self.room_id)))
-                response = json.loads(await ws.recv())
+                response = await receive_application(ws)
                 self.assertEqual(response["type"], "joined")
                 self.assertEqual(response["user_id"], str(self.auth.user_id))
         await self.wait_for_cleanup()
@@ -77,7 +88,7 @@ class SignalingNetworkTests(unittest.IsolatedAsyncioTestCase):
             async with connect(self.url) as ws:
                 await ws.send("x" * 16385)
                 with self.assertRaises(ConnectionClosed) as caught:
-                    await ws.recv()
+                    await receive_application(ws)
                 self.assertIsNotNone(caught.exception.rcvd)
                 if caught.exception.rcvd is not None:
                     self.assertEqual(caught.exception.rcvd.code, 1009)
@@ -89,7 +100,7 @@ class SignalingNetworkTests(unittest.IsolatedAsyncioTestCase):
         async with asyncio.timeout(5):
             async with connect(self.url) as ws:
                 await ws.send(json.dumps(authentication(self.room_id)))
-                joined = json.loads(await ws.recv())
+                joined = await receive_application(ws)
                 self.assertEqual(joined["type"], "joined")
                 await asyncio.sleep(0.3)
                 request_id = str(uuid4())
@@ -103,7 +114,7 @@ class SignalingNetworkTests(unittest.IsolatedAsyncioTestCase):
                         }
                     )
                 )
-                ack = json.loads(await ws.recv())
+                ack = await receive_application(ws)
                 self.assertEqual(ack["type"], "heartbeat_ack")
                 self.assertEqual(ack["request_id"], request_id)
                 self.assertEqual(ack["generation"], joined["generation"])
@@ -114,10 +125,11 @@ class SignalingNetworkTests(unittest.IsolatedAsyncioTestCase):
         async with asyncio.timeout(6):
             async with connect(self.url) as ws:
                 await ws.send(json.dumps(authentication(self.room_id)))
-                self.assertEqual(json.loads(await ws.recv())["type"], "joined")
+                joined = await receive_application(ws)
+                self.assertEqual(joined["type"], "joined")
                 self.server.should_exit = True
                 with self.assertRaises(ConnectionClosed):
-                    await ws.recv()
+                    await receive_application(ws)
             await self.server_task
         self.assertEqual(self.service.connections, 0)
         self.assertEqual(self.service.registry_size, 0)

@@ -127,9 +127,31 @@ class HeartbeatAck(Message):
     generation: UUID
 
 
+class OnlinePeer(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    user_id: UUID
+    generation: UUID
+
+
+class Participants(Message):
+    type: Literal["participants"]
+    room_id: UUID
+    epoch: UUID
+    sequence: int = Field(ge=1, strict=True)
+    members: list[OnlinePeer] = Field(max_length=3)
+
+    @model_validator(mode="after")
+    def unique_members(self) -> "Participants":
+        ids = [member.user_id for member in self.members]
+        generations = [member.generation for member in self.members]
+        if len(ids) != len(set(ids)) or len(generations) != len(set(generations)):
+            raise ValueError("duplicate participant or generation")
+        return self
+
+
 client_message_adapter = TypeAdapter(
     Annotated[Authenticate | Heartbeat, Field(discriminator="type")]
 )
 server_message_adapter = TypeAdapter(
-    Annotated[Joined | HeartbeatAck | Error, Field(discriminator="type")]
+    Annotated[Joined | HeartbeatAck | Participants | Error, Field(discriminator="type")]
 )

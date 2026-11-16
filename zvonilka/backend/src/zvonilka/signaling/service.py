@@ -12,6 +12,7 @@ from time import monotonic
 from typing import Protocol
 from uuid import UUID, uuid4
 
+from .participants import ParticipantsHub
 from .schemas import Authenticate, ErrorCode, Heartbeat, HeartbeatAck, Joined
 
 
@@ -145,6 +146,7 @@ class SignalingService:
             self.policy.heartbeat_min_interval, self.heartbeat_window / 4
         )
         self.connections = 0
+        self.participants = ParticipantsHub()
         self.closing = False
         self._handlers: set[Connection] = set()
         self._gates: dict[tuple[UUID, UUID], Gate] = {}

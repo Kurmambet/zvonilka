@@ -5,7 +5,7 @@ import json
 import unittest
 from dataclasses import replace
 from typing import Self
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import FastAPI
 from redis.exceptions import ConnectionError as RedisConnectionError
@@ -14,6 +14,7 @@ from starlette.types import ASGIApp, Message, Scope
 from zvonilka.http_boundary import SafeHttpBoundary
 from zvonilka.rooms.repository import RoomError
 from zvonilka.signaling.router import signaling_router
+from zvonilka.signaling.schemas import Participants
 from zvonilka.signaling.service import Policy, SignalingService
 
 
@@ -37,6 +38,9 @@ class WsSession:
         self.incoming: asyncio.Queue[Message] = asyncio.Queue()
         self.outgoing: asyncio.Queue[Message] = asyncio.Queue()
         self.task: asyncio.Task[None] | None = None
+        self.participants_messages: list[Participants] = []
+        self.participants_epoch: UUID | None = None
+        self.participants_sequence = 0
 
     async def run_app(self) -> None:
         await self.app(self.scope, self.incoming.get, self.outgoing.put)
@@ -71,11 +75,29 @@ class WsSession:
     async def raw(self, raw: str) -> None:
         await self.incoming.put({"type": "websocket.receive", "text": raw})
 
-    async def receive(self) -> dict:
+    async def receive_wire(self) -> dict:
         event = await self.event()
         if event["type"] != "websocket.send":
             raise AssertionError(f"expected message, got {event['type']}")
-        return json.loads(event["text"])
+        result = json.loads(event["text"])
+        if not isinstance(result, dict):
+            raise TypeError("server message must be an object")
+        return result
+
+    async def receive(self) -> dict:
+        # Legacy request/response tests still validate and retain every async snapshot.
+        while True:
+            result = await self.receive_wire()
+            if result.get("type") != "participants":
+                return result
+            snapshot = Participants.model_validate(result)
+            if self.participants_epoch is not None and snapshot.epoch != self.participants_epoch:
+                raise AssertionError("participants epoch changed on a live WS")
+            if snapshot.sequence <= self.participants_sequence:
+                raise AssertionError("participants sequence did not advance")
+            self.participants_epoch = snapshot.epoch
+            self.participants_sequence = snapshot.sequence
+            self.participants_messages.append(snapshot)
 
 
 class SignalingTransportTests(unittest.IsolatedAsyncioTestCase):

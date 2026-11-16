@@ -98,6 +98,19 @@ def send_error(
     writer.request_close(close_code, final_message=response.model_dump_json())
 
 
+async def join_and_publish(
+    service: SignalingService, attempt: Attempt, request_id: UUID, writer: SocketWriter
+) -> None:
+    await service.participants.admit(
+        attempt.room_id,
+        attempt.user_id,
+        attempt.generation,
+        writer.send,
+        attempt.connection.stop,
+        partial(service.join, attempt, request_id),
+    )
+
+
 async def cleanup(service: SignalingService, attempt: Attempt | None) -> None:
     if attempt is None or not attempt.join_attempted:
         return
@@ -180,13 +193,9 @@ def signaling_router() -> APIRouter:
                 # Bind stable locals for the callback and type checker.
                 current = attempt
                 join_request_id = request_id
-                response = await interrupted(
-                    connection, partial(service.join, current, join_request_id)
+                await interrupted(
+                    connection, partial(join_and_publish, service, current, join_request_id, writer)
                 )
-            remaining = attempt.deadline - monotonic()
-            if remaining <= 0:
-                raise Rejected("dependency_unavailable", 1013)
-            writer.send(response.model_dump_json())
             operation = "heartbeat"
             while True:
                 request_id = None
@@ -264,12 +273,18 @@ def signaling_router() -> APIRouter:
             try:
                 with anyio.CancelScope(shield=True):
                     try:
-                        if writer is not None:
-                            await writer.aclose()
-                        elif accepted:
-                            await close_socket(websocket, service.policy.send_timeout, 1000)
+                        if attempt is not None:
+                            service.participants.detach(
+                                attempt.room_id, attempt.user_id, attempt.generation
+                            )
                     finally:
-                        await cleanup(service, attempt)
+                        try:
+                            if writer is not None:
+                                await writer.aclose()
+                            elif accepted:
+                                await close_socket(websocket, service.policy.send_timeout, 1000)
+                        finally:
+                            await cleanup(service, attempt)
             finally:
                 service.release(connection)
 

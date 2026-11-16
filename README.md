@@ -13,7 +13,17 @@ PYTHONPATH=src env -u VIRTUAL_ENV uv run python -m zvonilka.server
 uv run python -m zvonilka.testing.runner --start tests --pattern test_rooms_api_integration.py --require-no-skips
 ```
 
+# Redis
+
 ```bash
+sudo apt update
+sudo apt install redis-server
+
+sudo systemctl start redis-server
+sudo systemctl status redis-server
+redis-cli ping
+
+
 ss -ltn '( sport = :6379 )'
 
 redis-cli CONFIG GET bind

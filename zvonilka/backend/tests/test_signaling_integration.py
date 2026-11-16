@@ -184,6 +184,43 @@ class SignalingIntegrationTests(AuthPgFixture):
         self.assertFalse(snapshot["members"][0]["online"])
         self.assertEqual(self.app.state.signaling.registry_size, 0)
 
+    async def test_real_admission_produces_ordered_online_snapshots(self):
+        auth = self.app.state.auth
+        repo = self.app.state.room_repository
+        guest = await auth.register("bobby", "Bob", self.password)
+        guest_id = str(guest["id"])
+        tokens = await auth.login("bobby", self.password)
+        invitation = await repo.issue_invite(self.owner_id, self.room_id)
+        await repo.redeem(guest_id, self.room_id, invitation["token"])
+        async with WsSession(self.asgi, self.path) as owner_ws:
+            await owner_ws.accepted()
+            await owner_ws.send(self.payload())
+            owner_joined = await owner_ws.receive_wire()
+            self.assertEqual(owner_joined["type"], "joined")
+            first = await owner_ws.receive_wire()
+            self.assertEqual(first["type"], "participants")
+            self.assertEqual(first["sequence"], 1)
+            async with WsSession(self.asgi, self.path) as guest_ws:
+                await guest_ws.accepted()
+                await guest_ws.send({**self.payload(), "access_token": tokens["access_token"]})
+                guest_joined = await guest_ws.receive_wire()
+                self.assertEqual(guest_joined["type"], "joined")
+                joined_view = await guest_ws.receive_wire()
+                self.assertEqual(joined_view["type"], "participants")
+                self.assertEqual(await owner_ws.receive_wire(), joined_view)
+                self.assertEqual(
+                    {m["user_id"] for m in joined_view["members"]}, {self.owner_id, guest_id}
+                )
+                generations = {m["user_id"]: m["generation"] for m in joined_view["members"]}
+                self.assertEqual(generations[self.owner_id], owner_joined["generation"])
+                self.assertEqual(generations[guest_id], guest_joined["generation"])
+            left = await owner_ws.receive_wire()
+            self.assertEqual(left["type"], "participants")
+            self.assertEqual(left["epoch"], first["epoch"])
+            self.assertEqual(left["sequence"], 3)
+            self.assertEqual([m["user_id"] for m in left["members"]], [self.owner_id])
+        self.assertEqual(self.app.state.signaling.participants.room_count, 0)
+
 
 if __name__ == "__main__":
     unittest.main()
