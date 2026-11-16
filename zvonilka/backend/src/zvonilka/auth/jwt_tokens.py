@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -5,6 +6,13 @@ import jwt
 from jwt import InvalidTokenError
 
 from .errors import AuthError
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedAccessClaims:
+    user_id: UUID
+    session_id: UUID
+    expires_at: int  # Verified JWT exp, in UTC Unix seconds; not a renewed deadline.
 
 
 class AccessTokens:
@@ -33,6 +41,10 @@ class AccessTokens:
         )
 
     def decode(self, token: str) -> tuple[UUID, UUID]:
+        claims = self.decode_claims(token)
+        return claims.user_id, claims.session_id
+
+    def decode_claims(self, token: str) -> VerifiedAccessClaims:
         if not isinstance(token, str) or len(token) > 4096:
             raise AuthError("invalid_access")
         try:
@@ -58,6 +70,6 @@ class AccessTokens:
             if claims["exp"] - claims["iat"] > self.ttl:
                 raise ValueError("access lifetime exceeds policy")
             UUID(claims["jti"])
-            return UUID(claims["sub"]), UUID(claims["sid"])
+            return VerifiedAccessClaims(UUID(claims["sub"]), UUID(claims["sid"]), claims["exp"])
         except (InvalidTokenError, ValueError, TypeError, KeyError, AttributeError):
             raise AuthError("invalid_access") from None

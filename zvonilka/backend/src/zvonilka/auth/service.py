@@ -42,6 +42,12 @@ class Principal:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class AuthenticatedAccess:
+    principal: Principal
+    expires_at: int
+
+
 class AuthService:
     def __init__(
         self,
@@ -206,7 +212,18 @@ class AuthService:
         return result
 
     async def authenticate(self, access_token: str) -> Principal:
-        user_id, session_id = self.access.decode(access_token)
+        return (await self.authenticate_access(access_token)).principal
+
+    async def authenticate_access(self, access_token: str) -> AuthenticatedAccess:
+        claims = self.access.decode_claims(access_token)
+        principal = await self.check_session(claims.user_id, claims.session_id)
+        # The DB await may cross exp; do not return already-expired authorization.
+        if utcnow().timestamp() >= claims.expires_at:
+            raise AuthError("invalid_access")
+        return AuthenticatedAccess(principal, claims.expires_at)
+
+    async def check_session(self, user_id: UUID, session_id: UUID) -> Principal:
+        # Server-side identity only. This checks revocation, not JWT validity or refresh.
         async with self.sessions() as db:
             row = (
                 await db.execute(
