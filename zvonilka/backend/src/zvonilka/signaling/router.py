@@ -1,7 +1,9 @@
-"""Bounded admission transport. This delivery intentionally has no heartbeat."""
+"""Bounded WS admission, generation-aware heartbeat and cooperative shutdown."""
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
+from functools import partial
 from time import monotonic
 from uuid import UUID
 
@@ -15,7 +17,14 @@ from zvonilka.observability.logging import log_event
 from zvonilka.rooms.repository import RoomError
 
 from .schemas import Error, ErrorCode
-from .service import Attempt, Rejected, SignalingService, parse_authentication
+from .service import (
+    Attempt,
+    Connection,
+    Rejected,
+    SignalingService,
+    parse_authentication,
+    parse_heartbeat,
+)
 
 logger = logging.getLogger("zvonilka.signaling")
 ROOM_ERRORS: dict[str, ErrorCode] = {
@@ -30,6 +39,27 @@ ROOM_ERRORS: dict[str, ErrorCode] = {
     "stale_generation": "stale_generation",
     "schema_mismatch": "dependency_unavailable",
 }
+
+
+async def interrupted[T](connection: Connection, action: Callable[[], Awaitable[T]]) -> T:
+    """Wake blocked IO on replacement/shutdown, and always reap both child tasks."""
+    connection.check()
+
+    async def run_action() -> T:
+        return await action()
+
+    work = asyncio.create_task(run_action())
+    stopped = asyncio.create_task(connection.stopped.wait())
+    try:
+        await asyncio.wait((work, stopped), return_when=asyncio.FIRST_COMPLETED)
+        connection.check()
+        return await work
+    finally:
+        for task in (work, stopped):
+            if not task.done():
+                task.cancel()
+        with anyio.CancelScope(shield=True):
+            await asyncio.gather(work, stopped, return_exceptions=True)
 
 
 async def receive_text(websocket: WebSocket, limit: int) -> str:
@@ -93,6 +123,8 @@ async def cleanup(service: SignalingService, attempt: Attempt | None) -> None:
         )
     except Exception:  # noqa: BLE001 -- Cleanup boundary; never serialize exception text.
         log_event(logger, "unexpected_error", code="internal_error", operation="leave")
+    finally:
+        service.forget(attempt)
 
 
 def signaling_router() -> APIRouter:
@@ -113,18 +145,23 @@ def signaling_router() -> APIRouter:
         if not service.acquire():
             await close_socket(websocket, service.policy.send_timeout, 1013)
             return
+        connection = service.track()
         attempt: Attempt | None = None
         request_id: UUID | None = None
         accepted = False
         cancelled = False
         operation_dependency = "postgres"
+        operation = "join"
         try:
             async with asyncio.timeout(service.policy.send_timeout):
                 await websocket.accept()
             accepted = True
             try:
                 async with asyncio.timeout(service.policy.auth_timeout):
-                    raw = await receive_text(websocket, service.policy.max_message_bytes)
+                    raw = await interrupted(
+                        connection,
+                        partial(receive_text, websocket, service.policy.max_message_bytes),
+                    )
             except TimeoutError:
                 raise Rejected("authentication_timeout") from None
             message = parse_authentication(raw)
@@ -133,25 +170,49 @@ def signaling_router() -> APIRouter:
                 raise Rejected("invalid_message")
             del raw
             async with asyncio.timeout(service.policy.operation_timeout):
-                attempt = await service.identify(message)
+                attempt = await interrupted(connection, partial(service.identify, message))
                 del message
+                attempt.connection = connection
                 operation_dependency = "redis"
-                response = await service.join(attempt, request_id)
+                # Bind stable locals for the callback and type checker.
+                current = attempt
+                join_request_id = request_id
+                response = await interrupted(
+                    connection, partial(service.join, current, join_request_id)
+                )
             remaining = attempt.deadline - monotonic()
             if remaining <= 0:
                 raise Rejected("dependency_unavailable", 1013)
             async with asyncio.timeout(min(service.policy.send_timeout, remaining)):
-                await websocket.send_text(response.model_dump_json())
-            # Until heartbeat is added, never leave a socket open past a safe lease window.
-            remaining = attempt.deadline - monotonic()
-            if remaining > 0:
+                await interrupted(
+                    connection, partial(websocket.send_text, response.model_dump_json())
+                )
+            operation = "heartbeat"
+            while True:
+                request_id = None
+                remaining = attempt.deadline - monotonic()
+                if remaining <= 0:
+                    raise Rejected("heartbeat_timeout")
                 try:
                     async with asyncio.timeout(remaining):
-                        await receive_text(websocket, service.policy.max_message_bytes)
-                    raise Rejected("invalid_message")
+                        raw = await interrupted(
+                            connection,
+                            partial(receive_text, websocket, service.policy.max_message_bytes),
+                        )
                 except TimeoutError:
-                    pass
-            await close_socket(websocket, service.policy.send_timeout, 1000)
+                    raise Rejected("heartbeat_timeout") from None
+                heartbeat = parse_heartbeat(raw)
+                del raw
+                request_id = heartbeat.request_id
+                async with asyncio.timeout(service.policy.operation_timeout):
+                    ack = await interrupted(
+                        connection, partial(service.heartbeat, current, heartbeat)
+                    )
+                async with asyncio.timeout(service.policy.send_timeout):
+                    await interrupted(
+                        connection, partial(websocket.send_text, ack.model_dump_json())
+                    )
+
         except WebSocketDisconnect:
             pass
         except asyncio.CancelledError:
@@ -159,7 +220,10 @@ def signaling_router() -> APIRouter:
             raise
         except Rejected as exc:
             if accepted:
-                await send_error(websocket, service, exc.code, request_id, exc.close_code)
+                error_request_id = request_id
+                if exc.code in {"connection_replaced", "server_shutdown"}:
+                    error_request_id = None
+                await send_error(websocket, service, exc.code, error_request_id, exc.close_code)
         except AuthError as exc:
             code: ErrorCode = "rate_limited" if exc.code == "rate_limited" else "invalid_access"
             if accepted:
@@ -172,10 +236,10 @@ def signaling_router() -> APIRouter:
                     "dependency_unavailable",
                     code="schema_mismatch",
                     dependency="redis",
-                    operation="join",
+                    operation=operation,
                 )
             elif code == "internal_error":
-                log_event(logger, "unexpected_error", code="internal_error", operation="join")
+                log_event(logger, "unexpected_error", code="internal_error", operation=operation)
             if accepted:
                 close_code = 1013 if code == "dependency_unavailable" else 1008
                 if code == "internal_error":
@@ -192,14 +256,14 @@ def signaling_router() -> APIRouter:
                 "dependency_unavailable",
                 dependency=dependency,
                 code="timeout" if isinstance(exc, TimeoutError) else f"{dependency}_unavailable",
-                operation="join",
+                operation=operation,
             )
             if accepted:
                 await send_error(websocket, service, "dependency_unavailable", request_id, 1013)
         except OSError:
             pass
         except Exception:  # noqa: BLE001 -- WS boundary; never emit raw input or exception text.
-            log_event(logger, "unexpected_error", code="internal_error", operation="join")
+            log_event(logger, "unexpected_error", code="internal_error", operation=operation)
             if accepted:
                 await send_error(websocket, service, "internal_error", request_id, 1011)
         finally:
@@ -208,6 +272,6 @@ def signaling_router() -> APIRouter:
                     await close_socket(websocket, service.policy.send_timeout, 1000)
                 await cleanup(service, attempt)
             finally:
-                service.release()
+                service.release(connection)
 
     return router

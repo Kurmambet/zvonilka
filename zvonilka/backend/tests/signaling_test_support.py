@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from uuid import UUID, uuid4
 
 from zvonilka.auth.errors import AuthError
+from zvonilka.rooms.repository import RoomError
 
 
 @dataclass(frozen=True)
@@ -36,6 +37,11 @@ class StubRooms:
         self.join_started = asyncio.Event()
         self.join_gate: asyncio.Event | None = None
         self.bad_snapshot = False
+        self.present: dict[tuple[str, str], str] = {}
+        self.heartbeats: list[tuple[str, str, str]] = []
+        self.heartbeat_error: Exception | None = None
+        self.heartbeat_gate: asyncio.Event | None = None
+        self.heartbeat_started = asyncio.Event()
 
     async def join(self, actor: str, room_id: str, generation: str) -> dict:
         self.joins.append((actor, room_id, generation))
@@ -44,7 +50,9 @@ class StubRooms:
             await self.join_gate.wait()
         if self.error is not None:
             raise self.error
-        return {
+        previous = self.present.get((actor, room_id))
+        self.present[(actor, room_id)] = generation
+        result: dict = {
             "room": {
                 "room_id": str(uuid4()) if self.bad_snapshot else room_id,
                 "owner_id": actor,
@@ -56,10 +64,28 @@ class StubRooms:
             }
         }
 
+        if previous is not None and previous != generation:
+            result["replaced_generation"] = previous
+        return result
+
+    async def heartbeat(self, actor: str, room_id: str, generation: str) -> dict:
+        self.heartbeats.append((actor, room_id, generation))
+        self.heartbeat_started.set()
+        if self.heartbeat_gate is not None:
+            await self.heartbeat_gate.wait()
+        if self.heartbeat_error is not None:
+            raise self.heartbeat_error
+        if self.present.get((actor, room_id)) != generation:
+            raise RoomError("stale_generation")
+        return {}
+
     async def leave(self, actor: str, room_id: str, generation: str) -> dict:
         self.leaves.append((actor, room_id, generation))
         if self.leave_error is not None:
             raise self.leave_error
+        if self.present.get((actor, room_id)) != generation:
+            raise RoomError("stale_generation")
+        del self.present[(actor, room_id)]
         return {}
 
 

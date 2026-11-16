@@ -61,6 +61,7 @@ class SignalingSchemaTests(unittest.TestCase):
     def test_authentication_from_json(self):
         item = client_message_adapter.validate_json(json.dumps(self.authentication()))
         self.assertIsInstance(item, Authenticate)
+        assert isinstance(item, Authenticate)
         self.assertEqual(str(item.room_id), self.room_id)
         self.assertEqual(item.access_token.get_secret_value(), self.token)
 

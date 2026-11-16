@@ -85,6 +85,44 @@ class SignalingNetworkTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.auth.calls, 0)
         self.assertEqual(self.rooms.joins, [])
 
+    async def test_heartbeat_ack_over_tcp(self):
+        async with asyncio.timeout(5):
+            async with connect(self.url) as ws:
+                await ws.send(json.dumps(authentication(self.room_id)))
+                joined = json.loads(await ws.recv())
+                self.assertEqual(joined["type"], "joined")
+                await asyncio.sleep(0.3)
+                request_id = str(uuid4())
+                await ws.send(
+                    json.dumps(
+                        {
+                            "version": 1,
+                            "type": "heartbeat",
+                            "request_id": request_id,
+                            "generation": joined["generation"],
+                        }
+                    )
+                )
+                ack = json.loads(await ws.recv())
+                self.assertEqual(ack["type"], "heartbeat_ack")
+                self.assertEqual(ack["request_id"], request_id)
+                self.assertEqual(ack["generation"], joined["generation"])
+        await self.wait_for_cleanup()
+        self.assertEqual(self.service.registry_size, 0)
+
+    async def test_server_stop_closes_live_socket_and_cleans_handler(self):
+        async with asyncio.timeout(6):
+            async with connect(self.url) as ws:
+                await ws.send(json.dumps(authentication(self.room_id)))
+                self.assertEqual(json.loads(await ws.recv())["type"], "joined")
+                self.server.should_exit = True
+                with self.assertRaises(ConnectionClosed):
+                    await ws.recv()
+            await self.server_task
+        self.assertEqual(self.service.connections, 0)
+        self.assertEqual(self.service.registry_size, 0)
+        self.assertEqual(self.rooms.present, {})
+
 
 if __name__ == "__main__":
     unittest.main()

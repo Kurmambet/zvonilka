@@ -1,11 +1,15 @@
 """Actual auth/Redis admission through the full app's ASGI WS interface."""
 
+import asyncio
 import os
 import unittest
+from dataclasses import replace
 from uuid import uuid4
 
 from auth_test_support import PG_URL, AuthPgFixture
 from test_signaling_transport import WsSession
+from zvonilka.rooms.repository import RoomError
+from zvonilka.signaling.service import Policy, SignalingService
 
 REDIS_URL = os.environ.get("ZVONILKA_TEST_REDIS_URL")
 
@@ -94,6 +98,91 @@ class SignalingIntegrationTests(AuthPgFixture):
             self.assertEqual(response["code"], "dependency_unavailable")
             self.assertNotIn(self.token, str(response))
         self.assertEqual(await redis.get(self.settings.room_registry_key), raw)
+
+    def short_presence(self):
+        repo = self.app.state.room_repository
+        repo.limits = replace(repo.limits, presence_ttl=1)
+        self.app.state.signaling = SignalingService(
+            self.app.state.auth,
+            repo,
+            presence_ttl=1,
+            policy=Policy(heartbeat_timeout=0.4, heartbeat_min_interval=0.01),
+        )
+        return repo
+
+    async def send_heartbeat(self, ws: WsSession, generation: str):
+        request_id = str(uuid4())
+        await ws.send(
+            {
+                "version": 1,
+                "type": "heartbeat",
+                "request_id": request_id,
+                "generation": generation,
+            }
+        )
+        ack = await ws.receive()
+        self.assertEqual(ack["type"], "heartbeat_ack")
+        self.assertEqual(ack["request_id"], request_id)
+
+    async def test_heartbeat_keeps_real_lease_alive_beyond_original_ttl(self):
+        repo = self.short_presence()
+        async with WsSession(self.asgi, self.path) as ws:
+            await ws.accepted()
+            await ws.send(self.payload())
+            joined = await ws.receive()
+            self.assertEqual(joined["type"], "joined")
+            for _ in range(14):
+                await asyncio.sleep(0.1)
+                await self.send_heartbeat(ws, joined["generation"])
+            snapshot = await repo.snapshot(self.owner_id, self.room_id)
+            self.assertTrue(snapshot["members"][0]["online"])
+        self.assertFalse((await repo.snapshot(self.owner_id, self.room_id))["members"][0]["online"])
+
+    async def test_old_disconnect_and_late_heartbeat_do_not_remove_new_presence(self):
+        repo = self.app.state.room_repository
+        async with WsSession(self.asgi, self.path) as first:
+            await first.accepted()
+            await first.send(self.payload())
+            old = await first.receive()
+            async with WsSession(self.asgi, self.path) as second:
+                await second.accepted()
+                await second.send(self.payload())
+                new = await second.receive()
+                self.assertNotEqual(new["generation"], old["generation"])
+                self.assertEqual((await first.receive())["code"], "connection_replaced")
+                await first.event()
+                assert first.task is not None
+                await asyncio.wait_for(first.task, timeout=3)
+                with self.assertRaises(RoomError) as caught:
+                    await repo.heartbeat(self.owner_id, self.room_id, old["generation"])
+                self.assertEqual(caught.exception.code, "stale_generation")
+                snapshot = await repo.snapshot(self.owner_id, self.room_id)
+                self.assertTrue(snapshot["members"][0]["online"])
+
+    async def test_shutdown_cleans_real_presence_before_return(self):
+        repo = self.app.state.room_repository
+        async with WsSession(self.asgi, self.path) as ws:
+            await ws.accepted()
+            await ws.send(self.payload())
+            self.assertEqual((await ws.receive())["type"], "joined")
+            await self.app.state.signaling.shutdown()
+            self.assertEqual((await ws.receive())["code"], "server_shutdown")
+            snapshot = await repo.snapshot(self.owner_id, self.room_id)
+            self.assertFalse(snapshot["members"][0]["online"])
+        self.assertEqual(self.app.state.signaling.connections, 0)
+
+    async def test_no_heartbeat_releases_real_presence(self):
+        repo = self.short_presence()
+        async with WsSession(self.asgi, self.path) as ws:
+            await ws.accepted()
+            await ws.send(self.payload())
+            self.assertEqual((await ws.receive())["type"], "joined")
+            error = await ws.receive()
+            self.assertEqual(error["code"], "heartbeat_timeout")
+            self.assertEqual((await ws.event())["type"], "websocket.close")
+        snapshot = await repo.snapshot(self.owner_id, self.room_id)
+        self.assertFalse(snapshot["members"][0]["online"])
+        self.assertEqual(self.app.state.signaling.registry_size, 0)
 
 
 if __name__ == "__main__":

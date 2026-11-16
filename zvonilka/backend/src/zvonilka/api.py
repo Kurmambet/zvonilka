@@ -107,10 +107,15 @@ def create_app(settings: Settings | None = None):
             log_event(logging.getLogger("zvonilka.api"), "service_started")
             yield
         finally:
-            if started:
-                log_event(logging.getLogger("zvonilka.api"), "service_stopped")
-            await redis.aclose()
-            await engine.dispose()
+            try:
+                if started:
+                    await app.state.signaling.shutdown()
+                    log_event(logging.getLogger("zvonilka.api"), "service_stopped")
+            finally:
+                try:
+                    await redis.aclose()
+                finally:
+                    await engine.dispose()
 
     app = FastAPI(title="Zvonilka", version="0.5.0.dev0", lifespan=lifespan, debug=False)
 

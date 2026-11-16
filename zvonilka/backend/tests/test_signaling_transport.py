@@ -87,7 +87,7 @@ class SignalingTransportTests(unittest.IsolatedAsyncioTestCase):
             operation_timeout=0.2,
             send_timeout=0.1,
             cleanup_timeout=0.1,
-            session_seconds=1,
+            heartbeat_timeout=1,
             max_connections=2,
         )
         self.service = SignalingService(self.auth, self.rooms, presence_ttl=45, policy=self.policy)
@@ -231,15 +231,15 @@ class SignalingTransportTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual((await second.event())["type"], "websocket.close")
         self.assertEqual(self.service.connections, 0)
 
-    async def test_short_session_closes_and_leaves(self):
-        self.service.session_seconds = 0.05
+    async def test_missing_heartbeat_closes_and_leaves(self):
+        self.service.heartbeat_window = 0.15
+        self.service.heartbeat_interval = 0.05
         async with WsSession(self.asgi, self.path) as ws:
             await ws.accepted()
             await ws.send(authentication(self.room_id))
             self.assertEqual((await ws.receive())["type"], "joined")
-            close = await ws.event()
-            self.assertEqual(close["type"], "websocket.close")
-            self.assertEqual(close["code"], 1000)
+            error = await self.assert_error(ws, "heartbeat_timeout")
+            self.assertIsNone(error["request_id"])
         self.assertEqual(self.rooms.leaves, self.rooms.joins)
 
     async def test_no_offer_forwarding_in_this_delivery(self):

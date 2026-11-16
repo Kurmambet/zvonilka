@@ -45,6 +45,9 @@ ErrorCode = Literal[
     "message_too_large",
     "dependency_unavailable",
     "internal_error",
+    "heartbeat_timeout",
+    "connection_replaced",
+    "server_shutdown",
 ]
 
 
@@ -84,9 +87,13 @@ class Joined(Message):
     generation: UUID
     room: RoomView
     capabilities: list[Capability] = Field(max_length=MAX_CAPABILITIES)
+    heartbeat_interval_ms: int = Field(default=10000, ge=1, strict=True)
+    heartbeat_timeout_ms: int = Field(default=30000, ge=2, strict=True)
 
     @model_validator(mode="after")
     def online_member(self) -> "Joined":
+        if self.heartbeat_interval_ms >= self.heartbeat_timeout_ms:
+            raise ValueError("heartbeat interval must be shorter than timeout")
         if self.room.state != "active":
             raise ValueError("joined requires an active room")
         ids = [member.user_id for member in self.room.members]
@@ -108,5 +115,21 @@ class Error(Message):
     fatal: bool = Field(strict=True)
 
 
-client_message_adapter = TypeAdapter(Authenticate)
-server_message_adapter = TypeAdapter(Annotated[Joined | Error, Field(discriminator="type")])
+class Heartbeat(Message):
+    type: Literal["heartbeat"]
+    request_id: UUID
+    generation: UUID
+
+
+class HeartbeatAck(Message):
+    type: Literal["heartbeat_ack"]
+    request_id: UUID
+    generation: UUID
+
+
+client_message_adapter = TypeAdapter(
+    Annotated[Authenticate | Heartbeat, Field(discriminator="type")]
+)
+server_message_adapter = TypeAdapter(
+    Annotated[Joined | HeartbeatAck | Error, Field(discriminator="type")]
+)

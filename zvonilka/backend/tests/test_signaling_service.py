@@ -47,7 +47,8 @@ class SignalingServiceTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(RoomError):
             await self.service.join(attempt, self.message.request_id)
         self.assertTrue(attempt.join_attempted)
-        await self.service.leave(attempt)
+        with self.assertRaises(RoomError):
+            await self.service.leave(attempt)
         self.assertEqual(self.rooms.leaves, self.rooms.joins)
 
     async def test_cancelled_join_keeps_cleanup_identity(self):
@@ -58,7 +59,8 @@ class SignalingServiceTests(unittest.IsolatedAsyncioTestCase):
         task.cancel()
         with self.assertRaises(asyncio.CancelledError):
             await task
-        await self.service.leave(attempt)
+        with self.assertRaises(RoomError):
+            await self.service.leave(attempt)
         self.assertEqual(self.rooms.leaves, self.rooms.joins)
 
     async def test_different_snapshot_room_is_not_success(self):
@@ -72,11 +74,11 @@ class SignalingServiceTests(unittest.IsolatedAsyncioTestCase):
         second = await self.service.identify(self.message)
         self.assertNotEqual(first.generation, second.generation)
 
-    async def test_short_session_does_not_outlive_lease_window(self):
+    async def test_initial_heartbeat_window_is_within_lease(self):
         service = SignalingService(self.auth, self.rooms, presence_ttl=2)
         before = monotonic()
         attempt = await service.identify(self.message)
-        self.assertEqual(service.session_seconds, 1)
+        self.assertEqual(service.heartbeat_window, 1)
         self.assertGreater(attempt.deadline, before)
         self.assertLessEqual(attempt.deadline - monotonic(), 1)
 
@@ -120,7 +122,7 @@ class SignalingServiceTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             Policy(auth_timeout=0)
         with self.assertRaises(ValueError):
-            Policy(session_seconds=float("inf"))
+            Policy(heartbeat_timeout=float("inf"))
         with self.assertRaises(ValueError):
             Policy(max_connections=True)
         with self.assertRaises(ValueError):
