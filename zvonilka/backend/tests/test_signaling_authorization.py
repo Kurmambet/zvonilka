@@ -116,3 +116,11 @@ class AuthorizationWindowTests(unittest.TestCase):
                 now=210,
             )
         self.assertEqual(self.window.state(210), "reauth_required")
+
+    def test_transition_ignores_session_checks_and_tracks_renewal(self):
+        self.assertEqual(self.window.next_transition(100), 200)
+        self.assertEqual(self.window.next_transition(200), 230)
+        self.window.reauthenticated(self.user, self.session, 1200, now_wall=1110, now=210)
+        self.assertEqual(self.window.next_transition(210), 300)
+        self.assertEqual(self.window.grace_deadline, 330)
+        self.assertEqual(self.window.next_transition(331), 331)

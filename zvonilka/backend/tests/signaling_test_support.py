@@ -41,6 +41,9 @@ class StubAuth:
         identity = TestIdentity(user_id or self.user_id, session_id or self.session_id)
         self.grants[token] = TestAccess(identity, expires_at or self.expires_at + 60)
 
+    async def check_session(self, user_id: UUID, session_id: UUID) -> TestIdentity:
+        return TestIdentity(user_id, session_id)
+
     async def authenticate_access(self, access_token: str) -> TestAccess:
         self.calls += 1
         if self.error is not None:

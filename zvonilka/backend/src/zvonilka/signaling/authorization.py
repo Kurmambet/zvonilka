@@ -103,6 +103,16 @@ class AuthorizationWindow:
         self.expires_at, self._expires_at = expires_at, deadline
         self._check_at = now + self.check_interval
 
+    @property
+    def grace_deadline(self) -> float:
+        return self._expires_at + self.grace_seconds
+
+    def next_transition(self, now: float) -> float:
+        state = self.state(now)
+        if state == "expired":
+            return now
+        return self._expires_at if state == "authorized" else self.grace_deadline
+
     def next_deadline(self, now: float) -> float:
         state = self.state(now)
         if state == "expired":

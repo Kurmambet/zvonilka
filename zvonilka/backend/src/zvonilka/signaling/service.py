@@ -54,6 +54,7 @@ class Access(Protocol):
 class Authenticator(Protocol):
     # Must verify JWT signature/exp AND the server-side session before returning.
     async def authenticate_access(self, access_token: str) -> Access: ...
+    async def check_session(self, user_id: UUID, session_id: UUID) -> Principal: ...
 
 
 class Rooms(Protocol):
@@ -65,6 +66,7 @@ class Rooms(Protocol):
 @dataclass(frozen=True, slots=True)
 class Policy:
     auth_timeout: float = 5.0
+    session_check_interval: float = 10.0
     operation_timeout: float = 5.0
     send_timeout: float = 2.0
     cleanup_timeout: float = 3.0
@@ -78,10 +80,12 @@ class Policy:
     relay_burst: int = 64
     # Each reauthenticate attempt costs a PostgreSQL session check.
     reauth_min_interval: float = 1.0
+    reauth_grace_seconds: float = 30.0
 
     def __post_init__(self) -> None:
         for value in (
             self.auth_timeout,
+            self.session_check_interval,
             self.operation_timeout,
             self.send_timeout,
             self.cleanup_timeout,
@@ -89,6 +93,7 @@ class Policy:
             self.heartbeat_min_interval,
             self.shutdown_timeout,
             self.reauth_min_interval,
+            self.reauth_grace_seconds,
         ):
             if not math.isfinite(value) or value <= 0:
                 raise ValueError("timeouts must be finite and positive")
@@ -126,6 +131,8 @@ class Connection:
     def check(self) -> None:
         if self.stopped.is_set():
             reason = self.reason or "server_shutdown"
+            if reason == "dependency_unavailable":
+                raise Rejected(reason, 1013)
             raise Rejected(reason, 1012 if reason == "server_shutdown" else 1008)
 
 
@@ -263,6 +270,7 @@ class SignalingService:
                 access.expires_at,
                 now_wall=time(),
                 now=now,
+                grace_seconds=self.policy.reauth_grace_seconds,
             )
         except AuthorizationRejected:
             raise Rejected("invalid_access") from None
@@ -387,6 +395,9 @@ class SignalingService:
             and monotonic() < attempt.deadline
         )
 
+    def can_receive_relay(self, attempt: Attempt) -> bool:
+        return self.is_current(attempt) and attempt.authorization.state(monotonic()) == "authorized"
+
     def relay(self, attempt: Attempt, message: RelayMessage) -> Error | None:
         attempt.connection.check()
         if self.closing:
@@ -409,6 +420,17 @@ class SignalingService:
         if attempt.relay_tokens < 1:
             raise Rejected("rate_limited")
         attempt.relay_tokens -= 1
+        state = attempt.authorization.state(now)
+        if state == "expired":
+            raise Rejected("reauthentication_timeout")
+        if state == "reauth_required":
+            return Error(
+                version=1,
+                type="error",
+                request_id=message.request_id,
+                code="authorization_expired",
+                fatal=False,
+            )
         common = {
             "version": 1,
             "type": message.type,

@@ -48,11 +48,13 @@ ErrorCode = Literal[
     "heartbeat_timeout",
     "connection_replaced",
     "server_shutdown",
+    "session_revoked",
     "peer_unavailable",
     "peer_replaced",
     "peer_overloaded",
     "invalid_target",
     "reauthentication_timeout",
+    "authorization_expired",
 ]
 
 

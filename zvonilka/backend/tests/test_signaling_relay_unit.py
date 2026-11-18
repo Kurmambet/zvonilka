@@ -33,6 +33,9 @@ class Auth:
     def principal(self) -> "Auth":
         return self
 
+    async def check_session(self, user_id: UUID, session_id: UUID) -> "Auth":
+        return self
+
     async def authenticate_access(self, access_token: str) -> "Auth":
         return self
 

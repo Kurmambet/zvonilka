@@ -10,13 +10,13 @@ from uuid import UUID
 import anyio
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from redis.exceptions import RedisError
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DBAPIError, SQLAlchemyError
 
 from zvonilka.auth.errors import AuthError
 from zvonilka.observability.logging import log_event
 from zvonilka.rooms.repository import RoomError
 
-from .auth_protocol import Reauthenticate
+from .auth_protocol import Reauthenticate, ReauthRequired
 from .schemas import Error, ErrorCode, Heartbeat
 from .sender import SocketWriter
 from .service import (
@@ -109,7 +109,7 @@ async def join_and_publish(
         writer.send,
         attempt.connection.stop,
         partial(service.join, attempt, request_id),
-        ready=partial(service.is_current, attempt),
+        ready=partial(service.can_receive_relay, attempt),
     )
 
 
@@ -137,6 +137,25 @@ async def cleanup(service: SignalingService, attempt: Attempt | None) -> None:
         service.forget(attempt)
 
 
+async def watch_session(service: SignalingService, attempt: Attempt) -> None:
+    # Independent of heartbeat and refresh; never retain the access token here.
+    window = attempt.authorization
+    connection = attempt.connection
+    try:
+        while not connection.stopped.is_set():
+            await asyncio.sleep(service.policy.session_check_interval)
+            if connection.stopped.is_set():
+                return
+            async with asyncio.timeout(service.policy.operation_timeout):
+                await service.auth.check_session(window.user_id, window.session_id)
+    except AuthError:
+        connection.stop("session_revoked")
+    except (SQLAlchemyError, TimeoutError, OSError):
+        connection.stop("dependency_unavailable")
+    except Exception:  # noqa: BLE001 -- Fail closed; never expose DB exception details.
+        connection.stop("internal_error")
+
+
 def signaling_router() -> APIRouter:
     router = APIRouter(prefix="/api/v1", tags=["signaling"])
 
@@ -160,6 +179,7 @@ def signaling_router() -> APIRouter:
         request_id: UUID | None = None
         accepted = False
         writer: SocketWriter | None = None
+        session_watch: asyncio.Task[None] | None = None
         operation_dependency = "postgres"
         operation = "join"
         try:
@@ -198,51 +218,76 @@ def signaling_router() -> APIRouter:
                 await interrupted(
                     connection, partial(join_and_publish, service, current, join_request_id, writer)
                 )
+            session_watch = asyncio.create_task(watch_session(service, current))
             operation = "heartbeat"
+            notified = False
             while True:
                 request_id = None
-                remaining = attempt.deadline - monotonic()
-                if remaining <= 0:
+                now = monotonic()
+                state = attempt.authorization.state(now)
+                if state == "expired":
+                    raise Rejected("reauthentication_timeout")
+                if attempt.deadline <= now:
                     raise Rejected("heartbeat_timeout")
+                if state == "reauth_required" and not notified:
+                    notice = ReauthRequired(
+                        version=1, type="reauth_required", generation=attempt.generation
+                    )
+                    writer.send(notice.model_dump_json())
+                    notified = True
+                # One receive task at a time; no separate watchdog until 4.5b4.
+                wait = min(attempt.deadline, attempt.authorization.next_transition(now)) - now
                 try:
-                    async with asyncio.timeout(remaining):
+                    async with asyncio.timeout(wait):
                         raw = await interrupted(
                             connection,
                             partial(receive_text, websocket, service.policy.max_message_bytes),
                         )
                 except TimeoutError:
-                    raise Rejected("heartbeat_timeout") from None
+                    continue
                 active = parse_active(raw)
                 del raw
                 request_id = active.request_id
-                if isinstance(active, Heartbeat):
-                    operation = "heartbeat"
-                    operation_dependency = "redis"
-                    async with asyncio.timeout(service.policy.operation_timeout):
-                        ack = await interrupted(
-                            connection, partial(service.heartbeat, current, active)
-                        )
-                    writer.send(ack.model_dump_json())
-                elif isinstance(active, Reauthenticate):
-                    operation = "reauthenticate"
-                    operation_dependency = "postgres"
-                    async with asyncio.timeout(service.policy.operation_timeout):
-                        renewed = await interrupted(
-                            connection, partial(service.reauthenticate, current, active)
-                        )
-                    writer.send(renewed.model_dump_json())
-                else:
-                    operation = "relay"
-                    error = service.relay(current, active)
-                    if error is not None:
-                        writer.send(error.model_dump_json())
+                if attempt.authorization.state(monotonic()) == "expired":
+                    raise Rejected("reauthentication_timeout")
+                timeout = min(
+                    service.policy.operation_timeout,
+                    max(0.0, attempt.authorization.grace_deadline - monotonic()),
+                )
+                try:
+                    if isinstance(active, Heartbeat):
+                        operation = "heartbeat"
+                        operation_dependency = "redis"
+                        async with asyncio.timeout(timeout):
+                            ack = await interrupted(
+                                connection, partial(service.heartbeat, current, active)
+                            )
+                        writer.send(ack.model_dump_json())
+                    elif isinstance(active, Reauthenticate):
+                        operation = "reauthenticate"
+                        operation_dependency = "postgres"
+                        async with asyncio.timeout(timeout):
+                            renewed = await interrupted(
+                                connection, partial(service.reauthenticate, current, active)
+                            )
+                        writer.send(renewed.model_dump_json())
+                        notified = False
+                    else:
+                        operation = "relay"
+                        error = service.relay(current, active)
+                        if error is not None:
+                            writer.send(error.model_dump_json())
+                except TimeoutError:
+                    if attempt.authorization.state(monotonic()) == "expired":
+                        raise Rejected("reauthentication_timeout") from None
+                    raise
 
         except WebSocketDisconnect:
             pass
         except Rejected as exc:
             if writer is not None:
                 error_request_id = request_id
-                if exc.code in {"connection_replaced", "server_shutdown"}:
+                if connection.reason == exc.code:
                     error_request_id = None
                 send_error(writer, exc.code, error_request_id, exc.close_code)
         except AuthError as exc:
@@ -291,6 +336,9 @@ def signaling_router() -> APIRouter:
             try:
                 with anyio.CancelScope(shield=True):
                     try:
+                        if session_watch is not None:
+                            session_watch.cancel()
+                            await asyncio.gather(session_watch, return_exceptions=True)
                         if attempt is not None:
                             service.participants.detach(
                                 attempt.room_id, attempt.user_id, attempt.generation

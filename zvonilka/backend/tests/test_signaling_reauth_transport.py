@@ -3,6 +3,7 @@
 import asyncio
 import json
 import unittest
+from unittest.mock import patch
 from uuid import UUID, uuid4
 
 from fastapi import FastAPI
@@ -185,6 +186,68 @@ class ReauthenticateTransportTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(relayed["type"], "offer")
                 self.assertEqual(relayed["from_generation"], first_joined["generation"])
                 self.assertEqual(relayed["request_id"], offer["request_id"])
+
+    async def test_grace_notifies_once_and_closes_idle_socket(self):
+        self.build(reauth_grace_seconds=0.3)
+        async with WsSession(self.app, self.path) as ws:
+            with patch("zvonilka.signaling.service.time", return_value=self.auth.expires_at - 0.05):
+                joined = await self.join(ws)
+            notice = await ws.receive_wire()
+            self.assertEqual(notice["type"], "reauth_required")
+            self.assertEqual(notice["generation"], joined["generation"])
+            await self.assert_fatal(ws, "reauthentication_timeout")
+        self.assertEqual(self.rooms.leaves, self.rooms.joins)
+        self.assertEqual(self.service.connections, 0)
+
+    async def test_grace_preserves_heartbeat_and_blocks_relay_both_ways_until_renewal(self):
+        first_user, second_user = uuid4(), uuid4()
+        self.auth.grant("next-token", user_id=first_user)
+        async with WsSession(self.app, self.path) as first:
+            with patch("zvonilka.signaling.service.time", return_value=self.auth.expires_at - 0.1):
+                a = await self.join(first, first_user)
+            self.assertEqual((await first.receive_wire())["type"], "reauth_required")
+            async with WsSession(self.app, self.path) as second:
+                b = await self.join(second, second_user)
+                self.assertEqual((await first.receive_wire())["type"], "participants")
+                await first.send(
+                    {
+                        "version": 1,
+                        "type": "heartbeat",
+                        "request_id": str(uuid4()),
+                        "generation": a["generation"],
+                    }
+                )
+                self.assertEqual((await first.receive_wire())["type"], "heartbeat_ack")
+
+                async def offer(ws: WsSession, own: dict, target: dict) -> None:
+                    await ws.send(
+                        {
+                            "version": 1,
+                            "type": "offer",
+                            "request_id": str(uuid4()),
+                            "generation": own["generation"],
+                            "target_user_id": target["user_id"],
+                            "target_generation": target["generation"],
+                            "sdp": "v=0",
+                        }
+                    )
+
+                for ws, own, target, code in (
+                    (first, a, b, "authorization_expired"),
+                    (second, b, a, "peer_unavailable"),
+                ):
+                    await offer(ws, own, target)
+                    error = await ws.receive_wire()
+                    self.assertEqual(error["code"], code)
+                    self.assertFalse(error["fatal"])
+                await first.send(self.request(a))
+                renewed = await first.receive_wire()
+                self.assertEqual(renewed["type"], "reauthenticated")
+                self.assertEqual(renewed["generation"], a["generation"])
+                await offer(second, b, a)
+                self.assertEqual((await first.receive_wire())["type"], "offer")
+                await offer(first, a, b)
+                self.assertEqual((await second.receive_wire())["type"], "offer")
 
 
 if __name__ == "__main__":

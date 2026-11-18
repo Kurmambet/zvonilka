@@ -20,6 +20,9 @@ class TokenAuth:
         self.session_id = uuid4()
         self.expires_at = int(time()) + 3600
 
+    async def check_session(self, user_id: UUID, session_id: UUID) -> TestIdentity:
+        return TestIdentity(user_id, session_id)
+
     async def authenticate_access(self, access_token: str) -> TestAccess:
         if access_token not in self.users:
             raise AuthError("invalid_access")
