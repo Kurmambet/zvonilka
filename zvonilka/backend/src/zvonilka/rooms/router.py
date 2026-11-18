@@ -62,7 +62,10 @@ def room_router(principal: Callable, rate: Callable) -> APIRouter:
     @router.delete("/rooms/{room_id}", status_code=204)
     async def close_room(room_id: UUID, request: Request, user: Principal = Depends(principal)):
         await limited(request, user, "room_write")
-        await request.app.state.rooms.close(user.user_id, room_id)
+        rooms = request.app.state.rooms
+        await request.app.state.signaling.participants.close_room(
+            room_id, lambda: rooms.close(user.user_id, room_id)
+        )
         return Response(status_code=204)
 
     return router

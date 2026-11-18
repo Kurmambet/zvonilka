@@ -1,7 +1,9 @@
 """Real PostgreSQL auth, Redis admission and full-app ASGI signaling relay."""
 
+import asyncio
 import os
 import unittest
+from unittest.mock import patch
 from uuid import UUID, uuid4
 
 from auth_test_support import PG_URL, AuthPgFixture
@@ -90,6 +92,67 @@ class RelayIntegrationTests(AuthPgFixture):
         self.assertTrue(all(not member["online"] for member in snapshot["members"]))
         self.assertEqual(self.app.state.signaling.connections, 0)
         self.assertEqual(self.app.state.signaling.participants.room_count, 0)
+
+    async def test_rest_close_notifies_both_sockets_and_rejects_rejoin(self):
+        import httpx
+
+        token = self.owner_tokens["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        async with (
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=self.asgi), base_url="http://test"
+            ) as client,
+            WsSession(self.asgi, self.path) as owner,
+        ):
+            await self.join(owner, token)
+            async with WsSession(self.asgi, self.path) as guest:
+                await self.join(guest, self.guest_tokens["access_token"])
+                self.assertEqual((await owner.receive_wire())["type"], "participants")
+                response = await client.delete(self.path.removesuffix("/ws"), headers=headers)
+                self.assertEqual(response.status_code, 204)
+                for ws in (owner, guest):
+                    error = await ws.receive_wire()
+                    self.assertEqual(error["type"], "error")
+                    self.assertEqual(error["code"], "room_closed")
+                    self.assertTrue(error["fatal"])
+                    self.assertIsNone(error["request_id"])
+                    self.assertEqual((await ws.event())["type"], "websocket.close")
+            async with WsSession(self.asgi, self.path) as retry:
+                await retry.accepted()
+                await retry.send({**authentication(UUID(self.room_id)), "access_token": token})
+                self.assertEqual((await retry.receive_wire())["code"], "room_closed")
+        self.assertEqual(self.app.state.signaling.connections, 0)
+        self.assertEqual(self.app.state.signaling.participants.room_count, 0)
+
+    async def test_failed_rest_close_leaves_socket_live(self):
+        import httpx
+        from redis.exceptions import ConnectionError as RedisConnectionError
+
+        token = self.owner_tokens["access_token"]
+        async with (
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=self.asgi), base_url="http://test"
+            ) as client,
+            WsSession(self.asgi, self.path) as ws,
+        ):
+            joined = await self.join(ws, token)
+            with patch.object(
+                self.app.state.room_repository, "close", side_effect=RedisConnectionError()
+            ):
+                response = await client.delete(
+                    self.path.removesuffix("/ws"), headers={"Authorization": f"Bearer {token}"}
+                )
+            self.assertEqual(response.status_code, 503)
+            await asyncio.sleep(self.app.state.signaling.policy.heartbeat_min_interval)
+            await ws.send(
+                {
+                    "version": 1,
+                    "type": "heartbeat",
+                    "request_id": str(uuid4()),
+                    "generation": joined["generation"],
+                }
+            )
+            self.assertEqual((await ws.receive_wire())["type"], "heartbeat_ack")
 
 
 if __name__ == "__main__":

@@ -62,6 +62,39 @@ class ParticipantsUnitTests(unittest.IsolatedAsyncioTestCase):
             peer.admission,
         )
 
+    async def test_close_waits_for_admission_then_stops_published_participant(self):
+        peer = Peer(self.room)
+        started, release, closing = asyncio.Event(), asyncio.Event(), asyncio.Event()
+        persisted = asyncio.Event()
+
+        async def admission() -> Joined:
+            started.set()
+            await release.wait()
+            return await peer.admission()
+
+        async def persist() -> None:
+            persisted.set()
+
+        async def close() -> None:
+            closing.set()
+            await self.hub.close_room(self.room, persist)
+
+        async with asyncio.timeout(2), asyncio.TaskGroup() as tasks:
+            tasks.create_task(
+                self.hub.admit(
+                    self.room, peer.user_id, peer.generation, peer.send, peer.stop, admission
+                )
+            )
+            await started.wait()
+            tasks.create_task(close())
+            await closing.wait()
+            self.assertFalse(persisted.is_set())
+            release.set()
+        self.assertTrue(persisted.is_set())
+        self.assertEqual(peer.stops, ["room_closed"])
+        self.assertFalse(self.hub.detach(self.room, peer.user_id, peer.generation))
+        self.assertEqual(self.hub.room_count, 0)
+
     async def test_first_snapshot_follows_own_joined(self):
         peer = Peer(self.room)
         await self.admit(peer)

@@ -102,6 +102,21 @@ class ParticipantsHub:
             room.users -= 1
             self._discard_empty(room_id, room)
 
+    async def close_room(self, room_id: UUID, persist: Callable[[], Awaitable[None]]) -> None:
+        room = self._rooms.setdefault(room_id, Room())
+        room.users += 1
+        try:
+            # Share the admission lock: no committed join can publish after this close.
+            async with room.lock:
+                await persist()
+                # Remove routing before waking handlers. Redis owns the closed state.
+                members, room.members = room.members, {}
+                for member in members.values():
+                    member.stop("room_closed")
+        finally:
+            room.users -= 1
+            self._discard_empty(room_id, room)
+
     def detach(self, room_id: UUID, user_id: UUID, generation: UUID) -> bool:
         # Pure synchronous changes may run while another join awaits Redis.
         room = self._rooms.get(room_id)
