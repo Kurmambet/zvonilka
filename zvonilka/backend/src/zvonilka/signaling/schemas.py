@@ -52,6 +52,7 @@ ErrorCode = Literal[
     "peer_replaced",
     "peer_overloaded",
     "invalid_target",
+    "reauthentication_timeout",
 ]
 
 

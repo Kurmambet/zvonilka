@@ -2,10 +2,11 @@
 
 import asyncio
 import unittest
+from time import time
 from uuid import UUID, uuid4
 
 from fastapi import FastAPI
-from signaling_test_support import StubRooms, TestIdentity, authentication
+from signaling_test_support import StubRooms, TestAccess, TestIdentity, authentication
 from starlette.types import Message, Receive, Scope, Send
 from test_signaling_transport import WsSession
 from zvonilka.auth.errors import AuthError
@@ -16,11 +17,14 @@ from zvonilka.signaling.service import Policy, SignalingService
 class TokenAuth:
     def __init__(self):
         self.users = {key: uuid4() for key in ("a", "b", "c")}
+        self.session_id = uuid4()
+        self.expires_at = int(time()) + 3600
 
-    async def authenticate(self, access_token: str) -> TestIdentity:
+    async def authenticate_access(self, access_token: str) -> TestAccess:
         if access_token not in self.users:
             raise AuthError("invalid_access")
-        return TestIdentity(self.users[access_token])
+        identity = TestIdentity(self.users[access_token], self.session_id)
+        return TestAccess(identity, self.expires_at)
 
 
 class RelayTransportTests(unittest.IsolatedAsyncioTestCase):

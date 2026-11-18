@@ -16,6 +16,7 @@ from zvonilka.auth.errors import AuthError
 from zvonilka.observability.logging import log_event
 from zvonilka.rooms.repository import RoomError
 
+from .auth_protocol import Reauthenticate
 from .schemas import Error, ErrorCode, Heartbeat
 from .sender import SocketWriter
 from .service import (
@@ -216,11 +217,20 @@ def signaling_router() -> APIRouter:
                 request_id = active.request_id
                 if isinstance(active, Heartbeat):
                     operation = "heartbeat"
+                    operation_dependency = "redis"
                     async with asyncio.timeout(service.policy.operation_timeout):
                         ack = await interrupted(
                             connection, partial(service.heartbeat, current, active)
                         )
                     writer.send(ack.model_dump_json())
+                elif isinstance(active, Reauthenticate):
+                    operation = "reauthenticate"
+                    operation_dependency = "postgres"
+                    async with asyncio.timeout(service.policy.operation_timeout):
+                        renewed = await interrupted(
+                            connection, partial(service.reauthenticate, current, active)
+                        )
+                    writer.send(renewed.model_dump_json())
                 else:
                     operation = "relay"
                     error = service.relay(current, active)

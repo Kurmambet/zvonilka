@@ -8,13 +8,16 @@ import math
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from time import monotonic
-from typing import Protocol
+from time import monotonic, time
+from typing import Annotated, Protocol
 from uuid import UUID, uuid4
 
+from pydantic import Field, TypeAdapter
+
+from .auth_protocol import Reauthenticate, Reauthenticated
+from .authorization import AuthorizationRejected, AuthorizationWindow
 from .participants import ParticipantsHub
 from .schemas import (
-    ActiveMessage,
     Answer,
     Authenticate,
     Error,
@@ -29,17 +32,28 @@ from .schemas import (
     RelayedMessage,
     RelayedOffer,
     RelayMessage,
-    active_message_adapter,
 )
 
 
-class Identity(Protocol):
+class Principal(Protocol):
     @property
     def user_id(self) -> UUID: ...
 
+    @property
+    def session_id(self) -> UUID: ...
+
+
+class Access(Protocol):
+    @property
+    def principal(self) -> Principal: ...
+
+    @property
+    def expires_at(self) -> int: ...
+
 
 class Authenticator(Protocol):
-    async def authenticate(self, access_token: str) -> Identity: ...
+    # Must verify JWT signature/exp AND the server-side session before returning.
+    async def authenticate_access(self, access_token: str) -> Access: ...
 
 
 class Rooms(Protocol):
@@ -62,6 +76,8 @@ class Policy:
     # Allow ICE bursts while bounding sustained signaling independently of heartbeat.
     relay_rate: int = 32
     relay_burst: int = 64
+    # Each reauthenticate attempt costs a PostgreSQL session check.
+    reauth_min_interval: float = 1.0
 
     def __post_init__(self) -> None:
         for value in (
@@ -72,6 +88,7 @@ class Policy:
             self.heartbeat_timeout,
             self.heartbeat_min_interval,
             self.shutdown_timeout,
+            self.reauth_min_interval,
         ):
             if not math.isfinite(value) or value <= 0:
                 raise ValueError("timeouts must be finite and positive")
@@ -118,11 +135,14 @@ class Attempt:
     room_id: UUID
     generation: UUID
     deadline: float
+    # Authorization of the existing WS; separate from the presence lease above.
+    authorization: AuthorizationWindow
     join_attempted: bool = False
     connection: Connection = field(default_factory=Connection)
     next_heartbeat_at: float = 0.0
     relay_tokens: float = 0.0
     relay_updated_at: float | None = None
+    next_reauth_at: float = 0.0
 
 
 @dataclass(slots=True)
@@ -151,9 +171,13 @@ def parse_heartbeat(raw: str) -> Heartbeat:
         raise Rejected("invalid_message") from None
 
 
-def parse_active(raw: str) -> ActiveMessage:
+SessionMessage = Heartbeat | Offer | Answer | IceCandidate | Reauthenticate
+session_message_adapter = TypeAdapter(Annotated[SessionMessage, Field(discriminator="type")])
+
+
+def parse_active(raw: str) -> SessionMessage:
     try:
-        return active_message_adapter.validate_json(raw)
+        return session_message_adapter.validate_json(raw)
     except (ValueError, RecursionError):
         raise Rejected("invalid_message") from None
 
@@ -230,9 +254,24 @@ class SignalingService:
                 self._gates.pop(key, None)
 
     async def identify(self, message: Authenticate) -> Attempt:
-        principal = await self.auth.authenticate(message.access_token.get_secret_value())
+        access = await self.auth.authenticate_access(message.access_token.get_secret_value())
+        now = monotonic()
+        try:
+            window = AuthorizationWindow(
+                access.principal.user_id,
+                access.principal.session_id,
+                access.expires_at,
+                now_wall=time(),
+                now=now,
+            )
+        except AuthorizationRejected:
+            raise Rejected("invalid_access") from None
         return Attempt(
-            principal.user_id, message.room_id, uuid4(), monotonic() + self.heartbeat_window
+            access.principal.user_id,
+            message.room_id,
+            uuid4(),
+            now + self.heartbeat_window,
+            window,
         )
 
     async def join(self, attempt: Attempt, request_id: UUID) -> Joined:
@@ -298,6 +337,45 @@ class SignalingService:
                 request_id=message.request_id,
                 generation=attempt.generation,
             )
+
+    async def reauthenticate(self, attempt: Attempt, message: Reauthenticate) -> Reauthenticated:
+        # Replaces only WS authorization. Generation, lease and Redis stay untouched.
+        attempt.connection.check()
+        if self.closing:
+            raise Rejected("server_shutdown", 1012)
+        if message.generation != attempt.generation:
+            raise Rejected("stale_generation")
+        started = monotonic()
+        if started >= attempt.deadline:
+            raise Rejected("heartbeat_timeout")
+        if not self.is_current(attempt):
+            raise Rejected("stale_generation")
+        if started < attempt.next_reauth_at:
+            raise Rejected("rate_limited")
+        # Failed attempts count too: every call is a database check.
+        attempt.next_reauth_at = started + self.policy.reauth_min_interval
+        access = await self.auth.authenticate_access(message.access_token.get_secret_value())
+        # The awaited check may have crossed replacement, shutdown or lease expiry.
+        attempt.connection.check()
+        if not self.is_current(attempt):
+            raise Rejected("stale_generation")
+        try:
+            attempt.authorization.reauthenticated(
+                access.principal.user_id,
+                access.principal.session_id,
+                access.expires_at,
+                now_wall=time(),
+                now=monotonic(),
+            )
+        except AuthorizationRejected as exc:
+            raise Rejected(exc.code) from None
+        return Reauthenticated(
+            version=1,
+            type="reauthenticated",
+            request_id=message.request_id,
+            generation=attempt.generation,
+            expires_at=attempt.authorization.expires_at,
+        )
 
     def is_current(self, attempt: Attempt) -> bool:
         gate = self._gates.get((attempt.user_id, attempt.room_id))

@@ -4,11 +4,12 @@ import json
 import unittest
 from dataclasses import replace
 from functools import partial
-from time import monotonic
+from time import monotonic, time
 from unittest.mock import patch
 from uuid import UUID, uuid4
 
 from pydantic import ValidationError
+from zvonilka.signaling.auth_protocol import Reauthenticate
 from zvonilka.signaling.schemas import (
     Answer,
     Authenticate,
@@ -25,8 +26,14 @@ from zvonilka.signaling.service import Attempt, Policy, Rejected, SignalingServi
 class Auth:
     def __init__(self):
         self.user_id = uuid4()
+        self.session_id = uuid4()
+        self.expires_at = int(time()) + 3600
 
-    async def authenticate(self, access_token: str) -> "Auth":
+    @property
+    def principal(self) -> "Auth":
+        return self
+
+    async def authenticate_access(self, access_token: str) -> "Auth":
         return self
 
 
@@ -140,7 +147,7 @@ class RelayUnitTests(unittest.IsolatedAsyncioTestCase):
             **overrides,
         }
         result = parse_active(json.dumps(data))
-        if isinstance(result, Heartbeat):
+        if isinstance(result, Heartbeat | Reauthenticate):
             raise TypeError("expected relay request")
         return result
 

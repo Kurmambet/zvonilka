@@ -2,6 +2,7 @@
 
 import asyncio
 from dataclasses import dataclass
+from time import time
 from uuid import UUID, uuid4
 
 from zvonilka.auth.errors import AuthError
@@ -11,21 +12,45 @@ from zvonilka.rooms.repository import RoomError
 @dataclass(frozen=True)
 class TestIdentity:
     user_id: UUID
+    session_id: UUID
+
+
+@dataclass(frozen=True)
+class TestAccess:
+    principal: TestIdentity
+    expires_at: int
 
 
 class StubAuth:
     def __init__(self):
         self.user_id = uuid4()
+        self.session_id = uuid4()
+        self.expires_at = int(time()) + 3600
         self.calls = 0
         self.error: Exception | None = None
+        self.grants: dict[str, TestAccess] = {}
 
-    async def authenticate(self, access_token: str) -> TestIdentity:
+    def grant(
+        self,
+        token: str,
+        *,
+        user_id: UUID | None = None,
+        session_id: UUID | None = None,
+        expires_at: int | None = None,
+    ) -> None:
+        identity = TestIdentity(user_id or self.user_id, session_id or self.session_id)
+        self.grants[token] = TestAccess(identity, expires_at or self.expires_at + 60)
+
+    async def authenticate_access(self, access_token: str) -> TestAccess:
         self.calls += 1
         if self.error is not None:
             raise self.error
-        if access_token != "test-access-token":
+        if access_token == "test-access-token":
+            return TestAccess(TestIdentity(self.user_id, self.session_id), self.expires_at)
+        grant = self.grants.get(access_token)
+        if grant is None:
             raise AuthError("invalid_access")
-        return TestIdentity(self.user_id)
+        return grant
 
 
 class StubRooms:
