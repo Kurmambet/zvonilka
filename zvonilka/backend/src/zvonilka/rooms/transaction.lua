@@ -142,6 +142,7 @@ else
     elseif op == 'redeem' then
         local inv = r.invites[request.digest]
         if not inv then return fail('invite_not_found') end
+        if r.owner == request.actor then return fail('owner_cannot_redeem') end
         -- Lost-response retry: consumed token remains bound to the same account.
         if inv.used_by then
             if inv.used_by ~= request.actor then return fail('invite_consumed') end

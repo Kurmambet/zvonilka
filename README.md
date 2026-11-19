@@ -128,7 +128,7 @@ curl -fsS "$ZVONILKA_SMOKE_BASE_URL/health/ready"
 
 # в момент, когда надо будет остановить докер, из другого терминала:
 docker compose --env-file .env.compose.local -f compose.dev.yaml stop api
-docker compose --env-file .env.compose.local -f compose.dev.yaml logs --tail=35 api
+docker compose --env-file .env.compose.local -f compose.dev.yaml logs --tail=50 api
 
 unset ZVONILKA_DEV_RATE_LIMIT_PREFIX ZVONILKA_DEV_ROOM_REGISTRY_KEY \
       ZVONILKA_DEV_ACCESS_TTL_SECONDS ZVONILKA_SMOKE_BASE_URL
@@ -165,5 +165,48 @@ npm create @quick-start/electron@latest
 # Updater: No
 cd desktop
 npm install
+npm run dev
+```
+
+```bash
+docker compose --env-file .env.compose.local -f compose.dev.yaml exec postgres psql -U zvonilka -d zvonilka
+
+  SELECT username, display_name FROM auth_users WHERE username = 'test2user';
+
+docker compose --env-file .env.compose.local -f compose.dev.yaml exec postgres psql -U zvonilka -d zvonilka -c "SELECT username, display_name FROM auth_users LIMIT 10;"
+
+
+
+
+docker compose --env-file .env.compose.local -f compose.dev.yaml exec postgres psql -U zvonilka -d zvonilka -c "\dt"
+
+docker compose --env-file .env.compose.local -f compose.dev.yaml stop api
+```
+
+```bash
+ZVONILKA_DEV_ACCESS_TTL_SECONDS=60 \
+  docker compose --env-file .env.compose.local -f compose.dev.yaml \
+  up -d --no-deps --force-recreate api
+
+
+docker compose --env-file .env.compose.local -f compose.dev.yaml \
+  exec -T api printenv ZVONILKA_ACCESS_TTL_SECONDS
+
+curl -fsS http://127.0.0.1:8001/health/ready
+
+# пересоздать
+unset ZVONILKA_DEV_ACCESS_TTL_SECONDS
+docker compose --env-file .env.compose.local -f compose.dev.yaml \
+  up -d --no-deps --force-recreate api
+```
+
+```bash
+# пересборка api
+docker compose --env-file .env.compose.local -f compose.dev.yaml \
+  up -d --build --no-deps --force-recreate api
+
+curl -fsS http://127.0.0.1:8001/health/ready
+
+npm run typecheck && npm run lint
 npm run dev
 ```

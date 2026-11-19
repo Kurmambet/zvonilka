@@ -21,6 +21,7 @@ STATUSES = {
     "invite_revoked": 410,
     "invite_expired": 410,
     "stale_generation": 409,
+    "owner_cannot_redeem": 403,
 }
 
 

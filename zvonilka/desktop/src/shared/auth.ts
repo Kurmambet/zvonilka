@@ -1,0 +1,44 @@
+export interface Profile {
+  id: string
+  username: string
+  display_name: string
+  created_at: string
+}
+
+export type LoginError =
+  | 'invalid_credentials'
+  | 'invalid_request'
+  | 'rate_limited'
+  | 'api_unavailable'
+  | 'profile_failed'
+  | 'unexpected'
+
+export type LoginResult = { ok: true; profile: Profile } | { ok: false; error: LoginError }
+
+export interface DesktopApi {
+  login(username: string, password: string): Promise<LoginResult>
+  createRoom(): Promise<RoomResult<RoomSummary>>
+  issueInvitation(roomId: string): Promise<RoomResult<string>>
+  redeemInvitation(invitation: string): Promise<RoomResult<RoomSummary>>
+}
+
+export interface RoomSummary {
+  room_id: string
+  state: 'created' | 'active' | 'recovering' | 'closed'
+}
+
+export type RoomError =
+  | 'sign_in_required'
+  | 'invalid_request'
+  | 'api_unavailable'
+  | 'forbidden'
+  | 'not_found'
+  | 'invite_expired'
+  | 'invite_revoked'
+  | 'invite_consumed'
+  | 'rate_limited'
+  | 'conflict'
+  | 'unexpected'
+  | 'owner_cannot_redeem'
+
+export type RoomResult<T> = { ok: true; value: T } | { ok: false; error: RoomError }

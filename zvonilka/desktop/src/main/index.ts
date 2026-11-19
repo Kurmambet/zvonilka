@@ -1,7 +1,45 @@
-import { app, shell, BrowserWindow, ipcMain } from 'electron'
+import { app, BrowserWindow, ipcMain } from 'electron'
+import { pathToFileURL } from 'node:url'
+import { loginAndLoadProfile } from './auth'
+import type { LoginResult } from '../shared/auth'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
+import type { IpcMainInvokeEvent, WebContents } from 'electron'
+import { createRoom, issueInvitation, redeemInvitation } from './rooms'
+import type { RoomResult } from '../shared/auth'
+
+function rendererUrl(): string {
+  const devUrl = is.dev ? process.env['ELECTRON_RENDERER_URL'] : undefined
+  return devUrl
+    ? new URL(devUrl).href
+    : pathToFileURL(join(__dirname, '../renderer/index.html')).href
+}
+
+const accessTokens = new WeakMap<WebContents, string>()
+
+function isTrustedRenderer(event: IpcMainInvokeEvent): boolean {
+  const frame = event.senderFrame
+  return frame !== null && frame === event.sender.mainFrame && frame.url === rendererUrl()
+}
+
+async function withAccessToken<T>(
+  event: IpcMainInvokeEvent,
+  action: (token: string) => Promise<RoomResult<T>>
+): Promise<RoomResult<T>> {
+  if (!isTrustedRenderer(event)) return { ok: false, error: 'unexpected' }
+
+  const sender = event.sender
+  const token = accessTokens.get(sender)
+  if (!token) return { ok: false, error: 'sign_in_required' }
+
+  const result = await action(token)
+  if (!result.ok && result.error === 'sign_in_required' && accessTokens.get(sender) === token) {
+    accessTokens.delete(sender)
+  }
+
+  return result
+}
 
 function createWindow(): void {
   // Create the browser window.
@@ -13,7 +51,10 @@ function createWindow(): void {
     ...(process.platform === 'linux' ? { icon } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
-      sandbox: false
+      contextIsolation: true,
+      nodeIntegration: false,
+      webSecurity: true,
+      sandbox: true
     }
   })
 
@@ -21,11 +62,10 @@ function createWindow(): void {
     mainWindow.show()
   })
 
-  mainWindow.webContents.setWindowOpenHandler((details) => {
-    shell.openExternal(details.url)
-    return { action: 'deny' }
-  })
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  mainWindow.webContents.on('will-navigate', (event) => event.preventDefault())
 
+  void mainWindow.loadURL(rendererUrl())
   // HMR for renderer base on electron-vite cli.
   // Load the remote URL for development or the local html file for production.
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
@@ -50,7 +90,28 @@ app.whenReady().then(() => {
   })
 
   // IPC test
-  ipcMain.on('ping', () => console.log('pong'))
+  ipcMain.handle(
+    'auth:login',
+    async (event, username: unknown, password: unknown): Promise<LoginResult> => {
+      if (!isTrustedRenderer(event)) return { ok: false, error: 'unexpected' }
+
+      const sender = event.sender
+      accessTokens.delete(sender)
+      return loginAndLoadProfile(username, password, (token) => {
+        if (!sender.isDestroyed()) accessTokens.set(sender, token)
+      })
+    }
+  )
+
+  ipcMain.handle('rooms:create', (event) => withAccessToken(event, createRoom))
+
+  ipcMain.handle('rooms:issue-invitation', (event, roomId: unknown) =>
+    withAccessToken(event, (token) => issueInvitation(token, roomId))
+  )
+
+  ipcMain.handle('rooms:redeem-invitation', (event, invitation: unknown) =>
+    withAccessToken(event, (token) => redeemInvitation(token, invitation))
+  )
 
   createWindow()
 
