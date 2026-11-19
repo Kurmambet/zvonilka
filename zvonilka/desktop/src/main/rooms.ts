@@ -14,7 +14,14 @@ function parseRoom(data: unknown): RoomSummary | null {
     return null
   }
 
-  return { room_id: data.room_id, owner_id: data.owner_id, state }
+  if (!Array.isArray(data.members)) return null
+
+  return {
+    room_id: data.room_id,
+    owner_id: data.owner_id,
+    state,
+    memberCount: data.members.length
+  }
 }
 
 async function responseError(response: Response): Promise<RoomError> {
@@ -47,7 +54,8 @@ async function responseError(response: Response): Promise<RoomError> {
       code === 'room_closed' ||
       code === 'invite_expired' ||
       code === 'invite_revoked' ||
-      code === 'invite_consumed'
+      code === 'invite_consumed' ||
+      code === 'invite_limit'
     ) {
       return code
     }

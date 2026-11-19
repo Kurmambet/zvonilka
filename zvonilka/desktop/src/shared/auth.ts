@@ -30,6 +30,7 @@ export interface RoomSummary {
   room_id: string
   state: 'created' | 'active' | 'recovering' | 'closed'
   owner_id: string
+  memberCount: number
 }
 
 export type RoomError =
@@ -47,6 +48,7 @@ export type RoomError =
   | 'owner_cannot_redeem'
   | 'room_closed'
   | 'refresh_uncertain'
+  | 'invite_limit'
 
 export type RoomResult<T> = { ok: true; value: T } | { ok: false; error: RoomError }
 
