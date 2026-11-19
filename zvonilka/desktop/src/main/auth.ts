@@ -1,4 +1,4 @@
-import type { LoginResult, RegisterResult } from '../shared/auth'
+import type { LoginResult, RegisterResult, LogoutResult } from '../shared/auth'
 
 const API_BASE_URL = 'http://127.0.0.1:8001'
 const REQUEST_TIMEOUT_MS = 5000
@@ -149,5 +149,20 @@ export async function registerAccount(
     }
 
     return { ok: false, error: 'unexpected' }
+  }
+}
+
+export async function revokeCurrentSession(accessToken: string): Promise<LogoutResult> {
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/v1/auth/logout`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}` },
+      redirect: 'error',
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+    })
+
+    return response.status === 204 ? 'revoked' : 'not_confirmed'
+  } catch {
+    return 'not_confirmed'
   }
 }

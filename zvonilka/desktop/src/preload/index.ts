@@ -4,7 +4,8 @@ import type {
   LoginResult,
   RoomResult,
   RoomSummary,
-  RegisterResult
+  RegisterResult,
+  LogoutResult
 } from '../shared/auth'
 
 const api: DesktopApi = {
@@ -17,7 +18,8 @@ const api: DesktopApi = {
     ipcRenderer.invoke('rooms:redeem-invitation', invitation) as Promise<RoomResult<RoomSummary>>,
   closeRoom: (roomId) => ipcRenderer.invoke('rooms:close', roomId) as Promise<RoomResult<null>>,
   register: (username, displayName, password) =>
-    ipcRenderer.invoke('auth:register', username, displayName, password) as Promise<RegisterResult>
+    ipcRenderer.invoke('auth:register', username, displayName, password) as Promise<RegisterResult>,
+  logout: () => ipcRenderer.invoke('auth:logout') as Promise<LogoutResult>
 }
 
 contextBridge.exposeInMainWorld('api', api)

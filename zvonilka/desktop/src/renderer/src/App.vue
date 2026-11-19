@@ -12,6 +12,7 @@ const registering = ref(false)
 const displayName = ref('')
 const passwordConfirmation = ref('')
 const notice = ref('')
+const loggingOut = ref(false)
 
 const registerMessages: Record<RegisterError, string> = {
   invalid_request: 'Проверьте имя пользователя, отображаемое имя и пароль.',
@@ -106,6 +107,33 @@ async function submitRegistration(): Promise<void> {
     pending.value = false
   }
 }
+
+async function logout(): Promise<void> {
+  if (loggingOut.value || !profile.value) return
+
+  loggingOut.value = true
+  error.value = ''
+  notice.value = ''
+  password.value = ''
+  passwordConfirmation.value = ''
+
+  try {
+    const result = await window.api.logout()
+    notice.value =
+      result === 'not_confirmed'
+        ? 'Вы вышли из приложения. Сервер не подтвердил завершение сессии.'
+        : 'Вы вышли из аккаунта.'
+  } catch {
+    error.value = 'Не удалось выполнить выход. Повторите попытку или закройте приложение.'
+  } finally {
+    loggingOut.value = false
+  }
+
+  if (!error.value) {
+    registering.value = false
+    profile.value = null
+  }
+}
 </script>
 
 <template>
@@ -120,7 +148,11 @@ async function submitRegistration(): Promise<void> {
         <dt>Отображаемое имя</dt>
         <dd>{{ profile.display_name }}</dd>
       </dl>
-      <RoomsPanel @sign-in-required="requireSignIn" />
+      <button type="button" :disabled="loggingOut" @click="logout">
+        {{ loggingOut ? 'Выход…' : 'Выйти' }}
+      </button>
+
+      <RoomsPanel v-if="!loggingOut" @sign-in-required="requireSignIn" />
     </section>
 
     <template v-else>
@@ -219,5 +251,6 @@ dd {
 .error {
   margin-top: 0.75rem;
   color: #ffb4ab;
+  user-select: text;
 }
 </style>

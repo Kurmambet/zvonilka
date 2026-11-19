@@ -175,5 +175,6 @@ code {
 
 .error {
   color: #ffb4ab;
+  user-select: text;
 }
 </style>

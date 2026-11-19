@@ -1,7 +1,7 @@
 import { app, BrowserWindow, ipcMain } from 'electron'
 import { pathToFileURL } from 'node:url'
-import { loginAndLoadProfile, registerAccount } from './auth'
-import type { LoginResult, RegisterResult } from '../shared/auth'
+import { loginAndLoadProfile, registerAccount, revokeCurrentSession } from './auth'
+import type { LoginResult, RegisterResult, LogoutResult } from '../shared/auth'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
@@ -129,6 +129,17 @@ app.whenReady().then(() => {
       return registerAccount(username, displayName, password)
     }
   )
+
+  ipcMain.handle('auth:logout', async (event): Promise<LogoutResult> => {
+    if (!isTrustedRenderer(event)) return 'not_confirmed'
+
+    const sender = event.sender
+    const token = accessTokens.get(sender)
+    accessTokens.delete(sender)
+
+    if (!token) return 'no_local_session'
+    return revokeCurrentSession(token)
+  })
 
   createWindow()
 
