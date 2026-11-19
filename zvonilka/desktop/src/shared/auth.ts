@@ -21,6 +21,7 @@ export interface DesktopApi {
   issueInvitation(roomId: string): Promise<RoomResult<string>>
   redeemInvitation(invitation: string): Promise<RoomResult<RoomSummary>>
   closeRoom(roomId: string): Promise<RoomResult<null>>
+  register(username: string, displayName: string, password: string): Promise<RegisterResult>
 }
 
 export interface RoomSummary {
@@ -44,3 +45,8 @@ export type RoomError =
   | 'room_closed'
 
 export type RoomResult<T> = { ok: true; value: T } | { ok: false; error: RoomError }
+
+export type RegisterError =
+  'invalid_request' | 'conflict' | 'rate_limited' | 'api_unavailable' | 'unexpected'
+
+export type RegisterResult = { ok: true; username: string } | { ok: false; error: RegisterError }

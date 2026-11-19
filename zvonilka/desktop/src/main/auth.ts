@@ -1,4 +1,4 @@
-import type { LoginResult } from '../shared/auth'
+import type { LoginResult, RegisterResult } from '../shared/auth'
 
 const API_BASE_URL = 'http://127.0.0.1:8001'
 const REQUEST_TIMEOUT_MS = 5000
@@ -99,3 +99,55 @@ export async function loginAndLoadProfile(
 }
 
 export { API_BASE_URL, REQUEST_TIMEOUT_MS, isRecord, readJson }
+
+export async function registerAccount(
+  username: unknown,
+  displayName: unknown,
+  password: unknown
+): Promise<RegisterResult> {
+  if (
+    typeof username !== 'string' ||
+    typeof displayName !== 'string' ||
+    typeof password !== 'string' ||
+    [...username].length < 3 ||
+    [...username].length > 64 ||
+    !displayName.trim() ||
+    [...displayName].length > 128 ||
+    [...password].length < 12 ||
+    [...password].length > 128
+  ) {
+    return { ok: false, error: 'invalid_request' }
+  }
+
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/v1/auth/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, display_name: displayName, password }),
+      redirect: 'error',
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+    })
+
+    if (response.status === 409) return { ok: false, error: 'conflict' }
+    if (response.status === 422) return { ok: false, error: 'invalid_request' }
+    if (response.status === 429) return { ok: false, error: 'rate_limited' }
+    if (response.status === 503) return { ok: false, error: 'api_unavailable' }
+    if (response.status !== 201) return { ok: false, error: 'unexpected' }
+
+    const profile = await readJson(response)
+    if (!isRecord(profile) || typeof profile.username !== 'string' || !profile.username) {
+      return { ok: false, error: 'unexpected' }
+    }
+
+    return { ok: true, username: profile.username }
+  } catch (error) {
+    if (
+      error instanceof TypeError ||
+      (error instanceof Error && ['TimeoutError', 'AbortError'].includes(error.name))
+    ) {
+      return { ok: false, error: 'api_unavailable' }
+    }
+
+    return { ok: false, error: 'unexpected' }
+  }
+}

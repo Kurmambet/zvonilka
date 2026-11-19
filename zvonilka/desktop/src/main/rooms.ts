@@ -31,8 +31,6 @@ async function responseError(response: Response): Promise<RoomError> {
       }
       return 'forbidden'
     }
-    case 410:
-      return 'room_closed'
     case 422:
       return 'invalid_request'
     case 429:
@@ -44,7 +42,12 @@ async function responseError(response: Response): Promise<RoomError> {
   if (response.status === 404 || response.status === 409 || response.status === 410) {
     const payload = await readJson(response)
     const code = isRecord(payload) && isRecord(payload.error) ? payload.error.code : undefined
-    if (code === 'invite_expired' || code === 'invite_revoked' || code === 'invite_consumed') {
+    if (
+      code === 'room_closed' ||
+      code === 'invite_expired' ||
+      code === 'invite_revoked' ||
+      code === 'invite_consumed'
+    ) {
       return code
     }
     if (response.status === 404) return 'not_found'

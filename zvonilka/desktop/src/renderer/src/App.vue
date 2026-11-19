@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref } from 'vue'
-import type { LoginError, Profile } from '../../shared/auth'
+import type { LoginError, Profile, RegisterError } from '../../shared/auth'
 import RoomsPanel from './components/RoomsPanel.vue'
 
 const username = ref('')
@@ -8,6 +8,18 @@ const password = ref('')
 const pending = ref(false)
 const error = ref('')
 const profile = ref<Profile | null>(null)
+const registering = ref(false)
+const displayName = ref('')
+const passwordConfirmation = ref('')
+const notice = ref('')
+
+const registerMessages: Record<RegisterError, string> = {
+  invalid_request: 'Проверьте имя пользователя, отображаемое имя и пароль.',
+  conflict: 'Не удалось зарегистрировать это имя пользователя. Попробуйте другое.',
+  rate_limited: 'Слишком много попыток регистрации. Попробуйте позже.',
+  api_unavailable: 'API недоступен. Проверьте, что backend запущен.',
+  unexpected: 'Не удалось подтвердить регистрацию. Попробуйте войти или повторите позже.'
+}
 
 const messages: Record<LoginError, string> = {
   invalid_credentials: 'Неверное имя пользователя или пароль.',
@@ -28,6 +40,7 @@ async function submit(): Promise<void> {
 
   pending.value = true
   error.value = ''
+  notice.value = ''
 
   try {
     const request = window.api.login(username.value, password.value)
@@ -43,6 +56,53 @@ async function submit(): Promise<void> {
     error.value = messages.unexpected
   } finally {
     password.value = ''
+    pending.value = false
+  }
+}
+
+function switchAuthMode(): void {
+  if (pending.value) return
+
+  registering.value = !registering.value
+  password.value = ''
+  passwordConfirmation.value = ''
+  error.value = ''
+  notice.value = ''
+}
+
+async function submitRegistration(): Promise<void> {
+  if (pending.value || profile.value) return
+
+  error.value = ''
+  notice.value = ''
+
+  if (password.value !== passwordConfirmation.value) {
+    error.value = 'Пароли не совпадают.'
+    return
+  }
+
+  pending.value = true
+
+  try {
+    const request = window.api.register(username.value, displayName.value, password.value)
+    password.value = ''
+    passwordConfirmation.value = ''
+
+    const result = await request
+    if (!result.ok) {
+      error.value = registerMessages[result.error]
+      return
+    }
+
+    username.value = result.username
+    displayName.value = ''
+    registering.value = false
+    notice.value = 'Аккаунт создан. Введите пароль, чтобы войти.'
+  } catch {
+    error.value = registerMessages.unexpected
+  } finally {
+    password.value = ''
+    passwordConfirmation.value = ''
     pending.value = false
   }
 }
@@ -63,34 +123,61 @@ async function submit(): Promise<void> {
       <RoomsPanel @sign-in-required="requireSignIn" />
     </section>
 
-    <form v-else :aria-busy="pending" @submit.prevent="submit">
-      <label>
-        Имя пользователя
-        <input
-          v-model="username"
-          autocomplete="username"
-          maxlength="64"
-          :disabled="pending"
-          required
-        />
-      </label>
+    <template v-else>
+      <form :aria-busy="pending" @submit.prevent="registering ? submitRegistration() : submit()">
+        <label>
+          Имя пользователя
+          <input
+            v-model="username"
+            autocomplete="username"
+            :minlength="registering ? 3 : 1"
+            maxlength="64"
+            :disabled="pending"
+            required
+          />
+        </label>
 
-      <label>
-        Пароль
-        <input
-          v-model="password"
-          type="password"
-          autocomplete="current-password"
-          maxlength="128"
-          :disabled="pending"
-          required
-        />
-      </label>
+        <label v-if="registering">
+          Отображаемое имя
+          <input v-model="displayName" maxlength="128" :disabled="pending" required />
+        </label>
 
-      <button type="submit" :disabled="pending">
-        {{ pending ? 'Вход…' : 'Войти' }}
-      </button>
-    </form>
+        <label>
+          Пароль
+          <input
+            v-model="password"
+            type="password"
+            :autocomplete="registering ? 'new-password' : 'current-password'"
+            :minlength="registering ? 12 : 1"
+            maxlength="128"
+            :disabled="pending"
+            required
+          />
+        </label>
+
+        <label v-if="registering">
+          Повторите пароль
+          <input
+            v-model="passwordConfirmation"
+            type="password"
+            autocomplete="new-password"
+            maxlength="128"
+            :disabled="pending"
+            required
+          />
+        </label>
+
+        <button type="submit" :disabled="pending">
+          {{ pending ? 'Подождите…' : registering ? 'Создать аккаунт' : 'Войти' }}
+        </button>
+
+        <button type="button" :disabled="pending" @click="switchAuthMode">
+          {{ registering ? 'Назад ко входу' : 'Зарегистрироваться' }}
+        </button>
+      </form>
+
+      <p v-if="notice" role="status">{{ notice }}</p>
+    </template>
 
     <p v-if="error" class="error" role="alert">{{ error }}</p>
   </main>

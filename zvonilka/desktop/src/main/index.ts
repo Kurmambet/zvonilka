@@ -1,7 +1,7 @@
 import { app, BrowserWindow, ipcMain } from 'electron'
 import { pathToFileURL } from 'node:url'
-import { loginAndLoadProfile } from './auth'
-import type { LoginResult } from '../shared/auth'
+import { loginAndLoadProfile, registerAccount } from './auth'
+import type { LoginResult, RegisterResult } from '../shared/auth'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
@@ -115,6 +115,19 @@ app.whenReady().then(() => {
 
   ipcMain.handle('rooms:close', (event, roomId: unknown) =>
     withAccessToken(event, (token) => closeRoom(token, roomId))
+  )
+
+  ipcMain.handle(
+    'auth:register',
+    async (
+      event,
+      username: unknown,
+      displayName: unknown,
+      password: unknown
+    ): Promise<RegisterResult> => {
+      if (!isTrustedRenderer(event)) return { ok: false, error: 'unexpected' }
+      return registerAccount(username, displayName, password)
+    }
   )
 
   createWindow()

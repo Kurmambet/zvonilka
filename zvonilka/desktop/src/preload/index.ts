@@ -1,5 +1,11 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { DesktopApi, LoginResult, RoomResult, RoomSummary } from '../shared/auth'
+import type {
+  DesktopApi,
+  LoginResult,
+  RoomResult,
+  RoomSummary,
+  RegisterResult
+} from '../shared/auth'
 
 const api: DesktopApi = {
   login: (username, password) =>
@@ -9,7 +15,9 @@ const api: DesktopApi = {
     ipcRenderer.invoke('rooms:issue-invitation', roomId) as Promise<RoomResult<string>>,
   redeemInvitation: (invitation) =>
     ipcRenderer.invoke('rooms:redeem-invitation', invitation) as Promise<RoomResult<RoomSummary>>,
-  closeRoom: (roomId) => ipcRenderer.invoke('rooms:close', roomId) as Promise<RoomResult<null>>
+  closeRoom: (roomId) => ipcRenderer.invoke('rooms:close', roomId) as Promise<RoomResult<null>>,
+  register: (username, displayName, password) =>
+    ipcRenderer.invoke('auth:register', username, displayName, password) as Promise<RegisterResult>
 }
 
 contextBridge.exposeInMainWorld('api', api)
