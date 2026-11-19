@@ -1,12 +1,18 @@
 import { app, BrowserWindow, ipcMain } from 'electron'
 import { pathToFileURL } from 'node:url'
-import { loginAndLoadProfile, registerAccount, revokeCurrentSession } from './auth'
+import {
+  loginAndLoadProfile,
+  registerAccount,
+  revokeCurrentSession,
+  refreshSession,
+  TokenPair
+} from './auth'
 import type { LoginResult, RegisterResult, LogoutResult } from '../shared/auth'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import type { IpcMainInvokeEvent, WebContents } from 'electron'
-import { createRoom, issueInvitation, redeemInvitation, closeRoom } from './rooms'
+import { createRoom, issueInvitation, redeemInvitation, closeRoom, getRoom } from './rooms'
 import type { RoomResult } from '../shared/auth'
 
 function rendererUrl(): string {
@@ -16,7 +22,14 @@ function rendererUrl(): string {
     : pathToFileURL(join(__dirname, '../renderer/index.html')).href
 }
 
-const accessTokens = new WeakMap<WebContents, string>()
+interface WindowSession {
+  tokens: TokenPair
+  refreshing?: ReturnType<typeof refreshSession>
+  refreshUncertain?: boolean
+}
+
+const sessions = new WeakMap<WebContents, WindowSession>()
+const loginAttempts = new WeakMap<WebContents, object>()
 
 function isTrustedRenderer(event: IpcMainInvokeEvent): boolean {
   const frame = event.senderFrame
@@ -30,15 +43,52 @@ async function withAccessToken<T>(
   if (!isTrustedRenderer(event)) return { ok: false, error: 'unexpected' }
 
   const sender = event.sender
-  const token = accessTokens.get(sender)
-  if (!token) return { ok: false, error: 'sign_in_required' }
+  const session = sessions.get(sender)
+  if (!session) return { ok: false, error: 'sign_in_required' }
 
-  const result = await action(token)
-  if (!result.ok && result.error === 'sign_in_required' && accessTokens.get(sender) === token) {
-    accessTokens.delete(sender)
+  const initialTokens = session.tokens
+  const first = await action(initialTokens.accessToken)
+
+  // Не возвращаем результаты старого аккаунта после logout или нового login.
+  if (sessions.get(sender) !== session) return { ok: false, error: 'unexpected' }
+  if (first.ok || first.error !== 'sign_in_required') return first
+
+  // Другой запрос мог уже обновить пару, пока этот ждал свой 401.
+  if (session.tokens === initialTokens) {
+    if (session.refreshUncertain) {
+      sessions.delete(sender)
+      return { ok: false, error: 'sign_in_required' }
+    }
+
+    const pending = (session.refreshing ??= refreshSession(initialTokens))
+    const refreshed = await pending
+
+    if (sessions.get(sender) !== session) return { ok: false, error: 'unexpected' }
+
+    if (session.refreshing === pending) {
+      session.refreshing = undefined
+      if (refreshed.ok) session.tokens = refreshed.tokens
+      else if (refreshed.reason === 'uncertain') session.refreshUncertain = true
+    }
+
+    if (!refreshed.ok) {
+      if (refreshed.reason === 'rate_limited') return { ok: false, error: 'rate_limited' }
+      if (refreshed.reason === 'uncertain') return { ok: false, error: 'refresh_uncertain' }
+
+      sessions.delete(sender)
+      return { ok: false, error: 'sign_in_required' }
+    }
   }
 
-  return result
+  const retryTokens = session.tokens
+  const retry = await action(retryTokens.accessToken)
+
+  if (sessions.get(sender) !== session) return { ok: false, error: 'unexpected' }
+  if (!retry.ok && retry.error === 'sign_in_required' && session.tokens === retryTokens) {
+    sessions.delete(sender)
+  }
+
+  return retry
 }
 
 function createWindow(): void {
@@ -68,11 +118,6 @@ function createWindow(): void {
   void mainWindow.loadURL(rendererUrl())
   // HMR for renderer base on electron-vite cli.
   // Load the remote URL for development or the local html file for production.
-  if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
-    mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
-  } else {
-    mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
-  }
 }
 
 // This method will be called when Electron has finished
@@ -96,10 +141,21 @@ app.whenReady().then(() => {
       if (!isTrustedRenderer(event)) return { ok: false, error: 'unexpected' }
 
       const sender = event.sender
-      accessTokens.delete(sender)
-      return loginAndLoadProfile(username, password, (token) => {
-        if (!sender.isDestroyed()) accessTokens.set(sender, token)
-      })
+      const attempt = {}
+      loginAttempts.set(sender, attempt)
+      sessions.delete(sender)
+
+      try {
+        const result = await loginAndLoadProfile(username, password, (tokens) => {
+          if (!sender.isDestroyed() && loginAttempts.get(sender) === attempt) {
+            sessions.set(sender, { tokens })
+          }
+        })
+
+        return loginAttempts.get(sender) === attempt ? result : { ok: false, error: 'unexpected' }
+      } finally {
+        if (loginAttempts.get(sender) === attempt) loginAttempts.delete(sender)
+      }
     }
   )
 
@@ -115,6 +171,10 @@ app.whenReady().then(() => {
 
   ipcMain.handle('rooms:close', (event, roomId: unknown) =>
     withAccessToken(event, (token) => closeRoom(token, roomId))
+  )
+
+  ipcMain.handle('rooms:get', (event, roomId: unknown) =>
+    withAccessToken(event, (token) => getRoom(token, roomId))
   )
 
   ipcMain.handle(
@@ -134,10 +194,14 @@ app.whenReady().then(() => {
     if (!isTrustedRenderer(event)) return 'not_confirmed'
 
     const sender = event.sender
-    const token = accessTokens.get(sender)
-    accessTokens.delete(sender)
+    const session = sessions.get(sender)
+    loginAttempts.delete(sender)
+    sessions.delete(sender)
 
-    if (!token) return 'no_local_session'
+    if (!session) return 'no_local_session'
+
+    const refreshed = await session.refreshing
+    const token = refreshed?.ok ? refreshed.tokens.accessToken : session.tokens.accessToken
     return revokeCurrentSession(token)
   })
 

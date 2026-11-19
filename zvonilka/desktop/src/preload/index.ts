@@ -19,7 +19,8 @@ const api: DesktopApi = {
   closeRoom: (roomId) => ipcRenderer.invoke('rooms:close', roomId) as Promise<RoomResult<null>>,
   register: (username, displayName, password) =>
     ipcRenderer.invoke('auth:register', username, displayName, password) as Promise<RegisterResult>,
-  logout: () => ipcRenderer.invoke('auth:logout') as Promise<LogoutResult>
+  logout: () => ipcRenderer.invoke('auth:logout') as Promise<LogoutResult>,
+  getRoom: (roomId) => ipcRenderer.invoke('rooms:get', roomId) as Promise<RoomResult<RoomSummary>>
 }
 
 contextBridge.exposeInMainWorld('api', api)

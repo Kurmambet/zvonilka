@@ -152,7 +152,7 @@ async function logout(): Promise<void> {
         {{ loggingOut ? 'Выход…' : 'Выйти' }}
       </button>
 
-      <RoomsPanel v-if="!loggingOut" @sign-in-required="requireSignIn" />
+      <RoomsPanel v-if="!loggingOut" :user-id="profile.id" @sign-in-required="requireSignIn" />
     </section>
 
     <template v-else>

@@ -23,11 +23,13 @@ export interface DesktopApi {
   closeRoom(roomId: string): Promise<RoomResult<null>>
   register(username: string, displayName: string, password: string): Promise<RegisterResult>
   logout(): Promise<LogoutResult>
+  getRoom(roomId: string): Promise<RoomResult<RoomSummary>>
 }
 
 export interface RoomSummary {
   room_id: string
   state: 'created' | 'active' | 'recovering' | 'closed'
+  owner_id: string
 }
 
 export type RoomError =
@@ -44,6 +46,7 @@ export type RoomError =
   | 'unexpected'
   | 'owner_cannot_redeem'
   | 'room_closed'
+  | 'refresh_uncertain'
 
 export type RoomResult<T> = { ok: true; value: T } | { ok: false; error: RoomError }
 

@@ -11,6 +11,8 @@ const invitationInput = ref('')
 const pending = ref(false)
 const error = ref('')
 const status = ref('')
+const props = defineProps<{ userId: string }>()
+const roomIdInput = ref('')
 
 const messages: Record<Exclude<RoomError, 'sign_in_required'>, string> = {
   invalid_request: 'Проверьте формат приглашения или повторите операцию.',
@@ -24,7 +26,8 @@ const messages: Record<Exclude<RoomError, 'sign_in_required'>, string> = {
   conflict: 'Операция недоступна в текущем состоянии комнаты.',
   unexpected: 'Не удалось выполнить операцию. Попробуйте снова.',
   owner_cannot_redeem: 'Вы уже владелец этой комнаты. Передайте приглашение другому участнику.',
-  room_closed: 'Комната уже закрыта.'
+  room_closed: 'Комната уже закрыта.',
+  refresh_uncertain: 'Не удалось подтвердить обновление сессии. Чтобы продолжить, войдите заново.'
 }
 
 async function run<T>(
@@ -97,6 +100,26 @@ function redeem(): Promise<void> {
     }
   )
 }
+
+function openRoom(): Promise<void> {
+  return run(
+    () => window.api.getRoom(roomIdInput.value),
+    (room) => {
+      if (room.state === 'closed') {
+        error.value = 'Комната уже закрыта.'
+        return
+      }
+
+      if (room.owner_id === props.userId) {
+        if (ownedRoom.value?.room_id !== room.room_id) issuedInvitation.value = ''
+        ownedRoom.value = room
+        if (joinedRoom.value?.room_id === room.room_id) joinedRoom.value = null
+      } else {
+        joinedRoom.value = room
+      }
+    }
+  )
+}
 </script>
 
 <template>
@@ -120,6 +143,14 @@ function redeem(): Promise<void> {
       </label>
     </template>
 
+    <form @submit.prevent="openRoom">
+      <label>
+        ID существующей комнаты
+        <input v-model="roomIdInput" :disabled="pending" maxlength="64" required />
+      </label>
+      <button type="submit" :disabled="pending">Открыть комнату</button>
+    </form>
+
     <form @submit.prevent="redeem">
       <label>
         Приглашение от владельца
@@ -137,7 +168,7 @@ function redeem(): Promise<void> {
 
     <p v-if="status" role="status">{{ status }}</p>
     <p v-if="joinedRoom" role="status">
-      Приглашение принято. Комната: <code>{{ joinedRoom.room_id }}</code>
+      Доступна комната: <code>{{ joinedRoom.room_id }}</code>
     </p>
     <p v-if="pending" role="status">Выполняется запрос…</p>
     <p v-if="error" class="error" role="alert">{{ error }}</p>

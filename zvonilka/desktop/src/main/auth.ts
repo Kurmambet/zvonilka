@@ -17,10 +17,69 @@ async function readJson(response: Response): Promise<unknown> {
   }
 }
 
+export interface TokenPair {
+  accessToken: string
+  refreshToken: string
+  sessionId: string
+}
+
+type RefreshResult =
+  { ok: true; tokens: TokenPair } | { ok: false; reason: 'rejected' | 'rate_limited' | 'uncertain' }
+
+function parseTokenPair(data: unknown): TokenPair | null {
+  if (
+    !isRecord(data) ||
+    typeof data.access_token !== 'string' ||
+    !data.access_token ||
+    typeof data.refresh_token !== 'string' ||
+    data.refresh_token.length !== 43 ||
+    typeof data.session_id !== 'string' ||
+    !data.session_id
+  ) {
+    return null
+  }
+
+  return {
+    accessToken: data.access_token,
+    refreshToken: data.refresh_token,
+    sessionId: data.session_id
+  }
+}
+
+export async function refreshSession(current: TokenPair): Promise<RefreshResult> {
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/v1/auth/refresh`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh_token: current.refreshToken }),
+      redirect: 'error',
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+    })
+
+    if (response.status === 401 || response.status === 422) {
+      return { ok: false, reason: 'rejected' }
+    }
+
+    // В api.py лимитер срабатывает до вызова AuthService.refresh.
+    if (response.status === 429) return { ok: false, reason: 'rate_limited' }
+    if (response.status !== 200) return { ok: false, reason: 'uncertain' }
+
+    const tokens = parseTokenPair(await readJson(response))
+    if (!tokens || tokens.sessionId !== current.sessionId) {
+      return { ok: false, reason: 'uncertain' }
+    }
+
+    return { ok: true, tokens }
+  } catch {
+    return { ok: false, reason: 'uncertain' }
+  }
+}
+
 export async function loginAndLoadProfile(
   username: unknown,
   password: unknown,
-  onAuthenticated: (accessToken: string) => void
+
+  onAuthenticated: (tokens: TokenPair) => void
 ): Promise<LoginResult> {
   if (
     typeof username !== 'string' ||
@@ -50,14 +109,13 @@ export async function loginAndLoadProfile(
     if (login.status === 503) return { ok: false, error: 'api_unavailable' }
     if (!login.ok) return { ok: false, error: 'unexpected' }
 
-    const tokens = await readJson(login)
-    if (!isRecord(tokens) || typeof tokens.access_token !== 'string' || !tokens.access_token) {
-      return { ok: false, error: 'unexpected' }
-    }
+    // Вместо старого чтения и проверки access_token:
+    const tokens = parseTokenPair(await readJson(login))
+    if (!tokens) return { ok: false, error: 'unexpected' }
 
     stage = 'profile'
     const me = await fetch(`${API_BASE_URL}/api/v1/users/me`, {
-      headers: { Authorization: `Bearer ${tokens.access_token}` },
+      headers: { Authorization: `Bearer ${tokens.accessToken}` },
       redirect: 'error',
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
     })
@@ -76,7 +134,7 @@ export async function loginAndLoadProfile(
       return { ok: false, error: 'profile_failed' }
     }
 
-    onAuthenticated(tokens.access_token)
+    onAuthenticated(tokens)
 
     return {
       ok: true,
