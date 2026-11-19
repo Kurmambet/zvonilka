@@ -6,7 +6,7 @@ import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import type { IpcMainInvokeEvent, WebContents } from 'electron'
-import { createRoom, issueInvitation, redeemInvitation } from './rooms'
+import { createRoom, issueInvitation, redeemInvitation, closeRoom } from './rooms'
 import type { RoomResult } from '../shared/auth'
 
 function rendererUrl(): string {
@@ -111,6 +111,10 @@ app.whenReady().then(() => {
 
   ipcMain.handle('rooms:redeem-invitation', (event, invitation: unknown) =>
     withAccessToken(event, (token) => redeemInvitation(token, invitation))
+  )
+
+  ipcMain.handle('rooms:close', (event, roomId: unknown) =>
+    withAccessToken(event, (token) => closeRoom(token, roomId))
   )
 
   createWindow()

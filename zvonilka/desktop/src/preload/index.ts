@@ -8,7 +8,8 @@ const api: DesktopApi = {
   issueInvitation: (roomId) =>
     ipcRenderer.invoke('rooms:issue-invitation', roomId) as Promise<RoomResult<string>>,
   redeemInvitation: (invitation) =>
-    ipcRenderer.invoke('rooms:redeem-invitation', invitation) as Promise<RoomResult<RoomSummary>>
+    ipcRenderer.invoke('rooms:redeem-invitation', invitation) as Promise<RoomResult<RoomSummary>>,
+  closeRoom: (roomId) => ipcRenderer.invoke('rooms:close', roomId) as Promise<RoomResult<null>>
 }
 
 contextBridge.exposeInMainWorld('api', api)

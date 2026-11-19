@@ -20,6 +20,7 @@ export interface DesktopApi {
   createRoom(): Promise<RoomResult<RoomSummary>>
   issueInvitation(roomId: string): Promise<RoomResult<string>>
   redeemInvitation(invitation: string): Promise<RoomResult<RoomSummary>>
+  closeRoom(roomId: string): Promise<RoomResult<null>>
 }
 
 export interface RoomSummary {
@@ -40,5 +41,6 @@ export type RoomError =
   | 'conflict'
   | 'unexpected'
   | 'owner_cannot_redeem'
+  | 'room_closed'
 
 export type RoomResult<T> = { ok: true; value: T } | { ok: false; error: RoomError }

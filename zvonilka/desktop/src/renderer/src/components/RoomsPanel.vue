@@ -10,6 +10,7 @@ const issuedInvitation = ref('')
 const invitationInput = ref('')
 const pending = ref(false)
 const error = ref('')
+const status = ref('')
 
 const messages: Record<Exclude<RoomError, 'sign_in_required'>, string> = {
   invalid_request: 'Проверьте формат приглашения или повторите операцию.',
@@ -22,7 +23,8 @@ const messages: Record<Exclude<RoomError, 'sign_in_required'>, string> = {
   rate_limited: 'Слишком много запросов. Подождите и попробуйте снова.',
   conflict: 'Операция недоступна в текущем состоянии комнаты.',
   unexpected: 'Не удалось выполнить операцию. Попробуйте снова.',
-  owner_cannot_redeem: 'Вы уже владелец этой комнаты. Передайте приглашение другому участнику.'
+  owner_cannot_redeem: 'Вы уже владелец этой комнаты. Передайте приглашение другому участнику.',
+  room_closed: 'Комната уже закрыта.'
 }
 
 async function run<T>(
@@ -33,6 +35,7 @@ async function run<T>(
 
   pending.value = true
   error.value = ''
+  status.value = ''
 
   try {
     const result = await action()
@@ -69,6 +72,22 @@ async function issue(): Promise<void> {
   )
 }
 
+async function closeOwnedRoom(): Promise<void> {
+  const roomId = ownedRoom.value?.room_id
+  if (!roomId || pending.value) return
+
+  if (!window.confirm('Закрыть комнату? Её приглашения больше не будут работать.')) return
+
+  await run(
+    () => window.api.closeRoom(roomId),
+    () => {
+      ownedRoom.value = null
+      issuedInvitation.value = ''
+      status.value = 'Комната закрыта.'
+    }
+  )
+}
+
 function redeem(): Promise<void> {
   return run(
     () => window.api.redeemInvitation(invitationInput.value),
@@ -94,6 +113,7 @@ function redeem(): Promise<void> {
       </p>
       <button type="button" :disabled="pending" @click="issue">Выпустить приглашение</button>
 
+      <button type="button" :disabled="pending" @click="closeOwnedRoom">Закрыть комнату</button>
       <label v-if="issuedInvitation">
         Приглашение — скопируйте и передайте второму участнику
         <input :value="issuedInvitation" readonly />
@@ -115,6 +135,7 @@ function redeem(): Promise<void> {
       <button type="submit" :disabled="pending">Принять приглашение</button>
     </form>
 
+    <p v-if="status" role="status">{{ status }}</p>
     <p v-if="joinedRoom" role="status">
       Приглашение принято. Комната: <code>{{ joinedRoom.room_id }}</code>
     </p>

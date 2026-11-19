@@ -31,6 +31,8 @@ async function responseError(response: Response): Promise<RoomError> {
       }
       return 'forbidden'
     }
+    case 410:
+      return 'room_closed'
     case 422:
       return 'invalid_request'
     case 429:
@@ -124,4 +126,32 @@ export async function redeemInvitation(
   if (invitation.length !== 84) return { ok: false, error: 'invalid_request' }
 
   return post(accessToken, '/api/v1/invites/redeem', { invitation }, parseRoom)
+}
+
+export async function closeRoom(accessToken: string, roomId: unknown): Promise<RoomResult<null>> {
+  if (typeof roomId !== 'string' || !UUID.test(roomId)) {
+    return { ok: false, error: 'invalid_request' }
+  }
+
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/v1/rooms/${roomId}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${accessToken}` },
+      redirect: 'error',
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
+    })
+
+    if (response.status === 204) return { ok: true, value: null }
+
+    return { ok: false, error: await responseError(response) }
+  } catch (error) {
+    if (
+      error instanceof TypeError ||
+      (error instanceof Error && ['TimeoutError', 'AbortError'].includes(error.name))
+    ) {
+      return { ok: false, error: 'api_unavailable' }
+    }
+
+    return { ok: false, error: 'unexpected' }
+  }
 }
