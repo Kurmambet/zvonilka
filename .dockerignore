@@ -1,0 +1,14 @@
+**
+!pyproject.toml
+!uv.lock
+!zvonilka/
+!zvonilka/backend/
+!zvonilka/backend/src/
+!zvonilka/backend/src/**
+!zvonilka/backend/alembic.ini
+!zvonilka/backend/migrations/
+!zvonilka/backend/migrations/**
+**/__pycache__/
+**/*.pyc
+**/.env
+**/.env.*

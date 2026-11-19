@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import secrets
 import sys
 from contextlib import asynccontextmanager
@@ -10,7 +11,9 @@ import httpx
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed
 
-BASE = "http://127.0.0.1:8000"
+# BASE = "http://127.0.0.1:8000"
+BASE = os.environ.get("ZVONILKA_SMOKE_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
+WS_BASE = BASE.replace("http://", "ws://", 1).replace("https://", "wss://", 1)
 MODE = sys.argv[1] if len(sys.argv) == 2 else "rooms"
 
 
@@ -77,7 +80,8 @@ async def main():
         at, bt = a["access_token"], b["access_token"]
         room = (await http(client, "POST", "/api/v1/rooms", 201, at, {}))["room_id"]
         path = f"/api/v1/rooms/{room}"
-        url = "ws://127.0.0.1:8000" + path + "/ws"
+        # url = "ws://127.0.0.1:8000" + path + "/ws"
+        url = f"{WS_BASE}{path}/ws"
         invite = (await http(client, "POST", path + "/invites", 201, at))["invitation"]
         await http(client, "POST", "/api/v1/invites/redeem", 200, bt, {"invitation": invite})
 
