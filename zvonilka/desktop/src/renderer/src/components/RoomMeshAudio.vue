@@ -11,6 +11,7 @@ type Link = {
   remote?: MediaStream
   player?: HTMLAudioElement
   cancelGather?: () => void
+  diagnostic: LinkDiagnostic
 }
 
 const links = new Map<string, Link>()
@@ -43,6 +44,202 @@ const testPlaying = ref(false)
 const testVolume = ref(100)
 
 const routeReport = ref('')
+
+type DiagnosticEvent = {
+  at: string
+  peer?: string
+  event: string
+  detail?: unknown
+}
+
+type RtpCounters = {
+  bytes: number | null
+  packets: number | null
+  lost: number | null
+  jitterMs: number | null
+}
+
+type LinkDiagnostic = {
+  id: string
+  name: string
+  closed: boolean
+  polling: boolean
+  statsError: boolean
+  candidates: Record<string, number>
+  selectedPair?: string
+  samples: Record<string, unknown>[]
+}
+
+const diagnosticsAvailable = ref(false)
+const diagnosticsText = ref('')
+const diagnosticsStatus = ref('')
+const diagnosticEvents: DiagnosticEvent[] = []
+const diagnosticLinks: LinkDiagnostic[] = []
+let diagnosticSequence = 0
+let diagnosticEventsDropped = 0
+let diagnosticLinksDropped = 0
+let diagnosticTimer = 0
+
+function recordDiagnostic(event: string, link?: Link, detail?: unknown): void {
+  diagnosticEvents.push({
+    at: new Date().toISOString(),
+    peer: link?.diagnostic.id,
+    event,
+    detail
+  })
+  if (diagnosticEvents.length > 512) {
+    diagnosticEvents.shift()
+    diagnosticEventsDropped++
+  }
+  diagnosticsAvailable.value = true
+}
+
+function newLinkDiagnostic(peer: AudioPeer): LinkDiagnostic {
+  const id = `peer-${++diagnosticSequence}`
+  const diagnostic: LinkDiagnostic = {
+    id,
+    name: peer.displayName || id,
+    closed: false,
+    polling: false,
+    statsError: false,
+    candidates: {},
+    samples: []
+  }
+  diagnosticLinks.push(diagnostic)
+  const closed = diagnosticLinks.filter((item) => item.closed)
+  if (closed.length > 8) {
+    diagnosticLinks.splice(diagnosticLinks.indexOf(closed[0]), 1)
+    diagnosticLinksDropped++
+  }
+  return diagnostic
+}
+
+function diagnosticNumber(value: unknown, scale = 1): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value * scale : null
+}
+
+function readRtp(row: Record<string, unknown>, incoming: boolean): RtpCounters {
+  return {
+    bytes: diagnosticNumber(incoming ? row.bytesReceived : row.bytesSent),
+    packets: diagnosticNumber(incoming ? row.packetsReceived : row.packetsSent),
+    lost: incoming ? diagnosticNumber(row.packetsLost) : null,
+    jitterMs: incoming ? diagnosticNumber(row.jitter, 1000) : null
+  }
+}
+
+function trackDiagnostic(track: MediaStreamTrack | null | undefined): object | null {
+  if (!track) return null
+  return { state: track.readyState, enabled: track.enabled, muted: track.muted }
+}
+
+async function sampleLink(link: Link): Promise<void> {
+  const { pc, diagnostic } = link
+  if (!current(link) || diagnostic.polling) return
+  diagnostic.polling = true
+
+  try {
+    const stats = await pc.getStats()
+    if (!current(link)) return
+    diagnostic.statsError = false
+
+    const rows = [...stats.values()]
+    const transport = rows.find((row) => row.type === 'transport' && row.selectedCandidatePairId)
+    const pairId = transport?.selectedCandidatePairId as string | undefined
+    const pair = pairId ? stats.get(pairId) : undefined
+    const local = pair ? stats.get(pair.localCandidateId) : undefined
+    const remote = pair ? stats.get(pair.remoteCandidateId) : undefined
+    const route = pair
+      ? {
+          local: local?.candidateType ?? null,
+          remote: remote?.candidateType ?? null,
+          protocol: local?.protocol ?? null,
+          relayProtocol: local?.relayProtocol ?? null
+        }
+      : null
+
+    if (diagnostic.selectedPair !== pairId) {
+      diagnostic.selectedPair = pairId
+      recordDiagnostic('ice.selected-pair-changed', link, route)
+    }
+
+    const audio = rows.filter(
+      (row) =>
+        (row.kind ?? row.mediaType) === 'audio' &&
+        (row.type === 'inbound-rtp' || row.type === 'outbound-rtp')
+    )
+
+    diagnostic.samples.push({
+      at: new Date().toISOString(),
+      ice: pc.iceConnectionState,
+      connection: pc.connectionState,
+      dtls: transport?.dtlsState ?? null,
+      route,
+      rttMs: diagnosticNumber(pair?.currentRoundTripTime, 1000),
+      microphoneOn: microphone.value,
+      sendingTrack: trackDiagnostic(link.sender?.track),
+      receivingTrack: trackDiagnostic(link.remote?.getAudioTracks()[0]),
+      player: link.player
+        ? { muted: link.player.muted, paused: link.player.paused, volume: link.player.volume }
+        : null,
+      audio: audio.map((row) => ({
+        stream: row.id,
+        direction: row.type === 'inbound-rtp' ? 'in' : 'out',
+        ...readRtp(row, row.type === 'inbound-rtp')
+      }))
+    })
+    if (diagnostic.samples.length > 60) diagnostic.samples.shift()
+  } catch {
+    if (current(link) && !diagnostic.statsError) {
+      diagnostic.statsError = true
+      recordDiagnostic('stats.read-failed', link)
+    }
+  } finally {
+    diagnostic.polling = false
+  }
+}
+
+function resetDiagnostics(): void {
+  diagnosticEvents.length = 0
+  diagnosticLinks.length = 0
+  diagnosticSequence = 0
+  diagnosticEventsDropped = 0
+  diagnosticLinksDropped = 0
+  diagnosticsAvailable.value = false
+  diagnosticsText.value = ''
+  diagnosticsStatus.value = ''
+}
+
+async function copyDiagnostics(): Promise<void> {
+  const text = JSON.stringify(
+    {
+      format: 'zvonilka-media-diagnostics-v1',
+      exportedAt: new Date().toISOString(),
+      userAgent: navigator.userAgent,
+      diagnosticEventsDropped,
+      diagnosticLinksDropped,
+      events: diagnosticEvents,
+      links: diagnosticLinks.map((item) => ({
+        id: item.id,
+        name: item.name,
+        closed: item.closed,
+        gatheredCandidates: item.candidates,
+        samples: item.samples
+      }))
+    },
+    null,
+    2
+  )
+
+  diagnosticsText.value = ''
+  diagnosticsStatus.value = ''
+  try {
+    await navigator.clipboard.writeText(text)
+    diagnosticsStatus.value = 'Диагностика скопирована.'
+  } catch {
+    diagnosticsText.value = text
+    diagnosticsStatus.value = 'Буфер обмена недоступен. Скопируйте отчёт из поля ниже.'
+  }
+}
 
 async function describeRoute(link: Link): Promise<string> {
   const { pc } = link
@@ -98,6 +295,9 @@ function togglePeerMute(peer: AudioPeer): void {
 
   player.muted = !player.muted
   mutedPeers.value[id] = player.muted
+
+  const link = links.get(id)
+  if (link) recordDiagnostic('player.mute-changed', link, { muted: player.muted })
 
   if (!player.muted && player.paused && player.srcObject) {
     void player.play().catch(() => {})
@@ -174,7 +374,7 @@ function startTestRecording(input: MediaStream, attempt: number): void {
     testRecordingUrl.value = url
     void nextTick(() => {
       if (testRecordingUrl.value !== url) return
-      if (testPlayer.value) testPlayer.value.volume = testVolume.value
+      if (testPlayer.value) testPlayer.value.volume = testVolume.value / 100
       void testPlayer.value?.play().catch(() => {
         // Если автовоспроизведение заблокировано, доступны controls.
       })
@@ -323,6 +523,9 @@ async function toggleMicrophoneTest(): Promise<void> {
 }
 
 onMounted(() => {
+  diagnosticTimer = window.setInterval(() => {
+    for (const link of links.values()) void sampleLink(link)
+  }, 2000)
   navigator.mediaDevices.addEventListener('devicechange', refreshMicrophones)
   void refreshMicrophones()
 })
@@ -340,6 +543,11 @@ function setNote(link: Link, text: string): void {
 }
 
 function drop(link: Link): void {
+  link.diagnostic.closed = true
+  recordDiagnostic('peer.closed', link, {
+    connection: link.pc.connectionState,
+    ice: link.pc.iceConnectionState
+  })
   delete mutedPeers.value[key(link.peer)]
   links.delete(key(link.peer))
   link.cancelGather?.()
@@ -384,8 +592,42 @@ function bindPlayer(peer: AudioPeer, el: Element | ComponentPublicInstance | nul
 
 function createLink(peer: AudioPeer): Link {
   const pc = new RTCPeerConnection({ iceServers: [] })
-  const link: Link = { peer, pc }
+  const link: Link = { peer, pc, diagnostic: newLinkDiagnostic(peer) }
   links.set(key(peer), link)
+
+  recordDiagnostic('peer.created', link, {
+    initiator: peer.initiator,
+    ice: pc.iceConnectionState,
+    connection: pc.connectionState
+  })
+
+  pc.addEventListener('icecandidate', ({ candidate }) => {
+    if (!current(link) || !candidate?.type) return
+    const counts = link.diagnostic.candidates
+    counts[candidate.type] = (counts[candidate.type] ?? 0) + 1
+  })
+
+  pc.addEventListener('icecandidateerror', ({ errorCode, url }) => {
+    if (!current(link)) return
+    recordDiagnostic('ice.candidate-error', link, {
+      code: errorCode,
+      serverKind: /^(stun[s]?|turn[s]?):/i.exec(url)?.[1]?.toLowerCase() ?? null
+    })
+  })
+
+  pc.addEventListener('icegatheringstatechange', () => {
+    if (!current(link)) return
+    recordDiagnostic('ice.gathering-state', link, {
+      state: pc.iceGatheringState,
+      candidates: { ...link.diagnostic.candidates }
+    })
+  })
+
+  pc.addEventListener('iceconnectionstatechange', () => {
+    if (!current(link)) return
+    recordDiagnostic('ice.connection-state', link, pc.iceConnectionState)
+  })
+
   setNote(link, 'Подключение…')
   pc.ontrack = ({ track }) => {
     if (!current(link)) return
@@ -394,6 +636,7 @@ function createLink(peer: AudioPeer): Link {
   }
   pc.onconnectionstatechange = () => {
     if (!current(link)) return
+    recordDiagnostic('peer.connection-state', link, pc.connectionState)
     if (pc.connectionState === 'connected') {
       if (notes.value[key(peer)] === 'Подключение…') setNote(link, 'Аудиосвязь установлена.')
     } else if (pc.connectionState === 'failed') {
@@ -469,6 +712,12 @@ async function receive(link: Link, signal: AudioSignal): Promise<void> {
 }
 
 function update(next: AudioPeer[]): void {
+  if (!peers.value.length && next.length) {
+    resetDiagnostics()
+    recordDiagnostic('media.started', undefined, { peers: next.length })
+  } else if (peers.value.length && !next.length) {
+    recordDiagnostic('media.no-peers')
+  }
   routeRequest++
   routeReport.value = ''
   const keys = new Set(next.map(key))
@@ -523,6 +772,7 @@ async function toggleMicrophone(): Promise<void> {
       microphone.value = true
       void refreshMicrophones()
     }
+    recordDiagnostic('microphone.changed', undefined, { enabled: microphone.value })
     const track = capture?.getAudioTracks()[0] ?? null
     await Promise.all(
       [...links.values()].map(async (link) => {
@@ -530,6 +780,7 @@ async function toggleMicrophone(): Promise<void> {
           await link.sender?.replaceTrack(track)
         } catch {
           if (current(link)) setNote(link, 'Не удалось переключить микрофон для этого участника.')
+          recordDiagnostic('microphone.replace-track-failed', link)
         }
       })
     )
@@ -542,6 +793,7 @@ async function toggleMicrophone(): Promise<void> {
 }
 
 onBeforeUnmount(() => {
+  window.clearInterval(diagnosticTimer)
   disposed = true
   navigator.mediaDevices.removeEventListener('devicechange', refreshMicrophones)
   unsubscribe()
@@ -670,6 +922,19 @@ onBeforeUnmount(() => {
       </div>
     </section>
   </div>
+
+  <details v-if="diagnosticsAvailable" class="diagnostics-panel">
+    <summary>Диагностика звонка</summary>
+    <button type="button" @click="copyDiagnostics">Скопировать диагностику</button>
+    <p v-if="diagnosticsStatus" role="status">{{ diagnosticsStatus }}</p>
+    <textarea
+      v-if="diagnosticsText"
+      :value="diagnosticsText"
+      aria-label="Диагностика звонка"
+      rows="8"
+      readonly
+    />
+  </details>
 </template>
 
 <style scoped>
@@ -844,5 +1109,21 @@ onBeforeUnmount(() => {
   overflow-wrap: anywhere;
   user-select: text;
   font-size: 0.8125rem;
+}
+
+.diagnostics-panel {
+  min-width: 0;
+  font-size: 0.875rem;
+}
+
+.diagnostics-panel summary {
+  cursor: pointer;
+}
+
+.diagnostics-panel textarea {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  user-select: text;
 }
 </style>

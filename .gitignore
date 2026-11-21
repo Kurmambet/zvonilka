@@ -25,3 +25,4 @@ PROMPT*.md
 /.env.compose.local
 mdtree_*.json
 desktop-handoff.md
+reports/
