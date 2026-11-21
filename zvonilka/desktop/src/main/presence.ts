@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import type { AudioEvent, AudioPeer } from '../shared/audio'
 import type { PresenceState, RoomResult } from '../shared/auth'
 import { API_BASE_URL, isRecord } from './auth'
 
@@ -20,19 +21,46 @@ export function connectPresence(
   roomId: string,
   accessToken: string,
   refresh: Refresh,
-  publish: (state: PresenceState) => void
-): () => void {
+  publish: (state: PresenceState) => void,
+  audio: (event: AudioEvent) => void
+): { stop: () => void; sendAudio: (target: unknown, signal: unknown) => boolean } {
   const url = new URL(`/api/v1/rooms/${roomId}/ws`, API_BASE_URL)
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
 
   let stopped = false
   let cleanupSocket: (() => void) | undefined
   let retriedInitialAuth = false
+  let peer: AudioPeer | null = null
+  let transmit: (signal: Record<string, unknown>) => boolean = () => false
+
+  function sendAudio(target: unknown, signal: unknown): boolean {
+    if (
+      !peer ||
+      !isRecord(target) ||
+      target.roomId !== peer.roomId ||
+      target.userId !== peer.userId ||
+      target.generation !== peer.generation ||
+      !isRecord(signal) ||
+      (signal.type !== 'offer' && signal.type !== 'answer') ||
+      signal.type !== (peer.initiator ? 'offer' : 'answer') ||
+      typeof signal.sdp !== 'string' ||
+      !signal.sdp ||
+      Buffer.byteLength(signal.sdp, 'utf8') > 16384
+    )
+      return false
+    return transmit({
+      type: signal.type,
+      sdp: signal.sdp,
+      target_user_id: peer.userId,
+      target_generation: peer.generation
+    })
+  }
 
   function stop(): void {
     if (stopped) return
     stopped = true
     cleanupSocket?.()
+    audio({ peer: null })
   }
 
   function end(reason: string): void {
@@ -60,6 +88,7 @@ export function connectPresence(
 
     let retired = false
     let generation: string | undefined
+    let selfId: string | undefined
     let interval: ReturnType<typeof setInterval> | undefined
     let heartbeatTimer: ReturnType<typeof setTimeout> | undefined
     let reauthTimer: ReturnType<typeof setTimeout> | undefined
@@ -90,6 +119,9 @@ export function connectPresence(
         return false
       }
     }
+
+    transmit = (signal) =>
+      Boolean(generation) && send({ ...signal, generation, request_id: randomUUID() })
 
     async function retryInitialAuth(): Promise<void> {
       retriedInitialAuth = true
@@ -177,6 +209,7 @@ export function connectPresence(
           }
 
           generation = payload.generation
+          selfId = payload.user_id
           clearTimeout(joinTimer)
           publish({ phase: 'online', roomId, userIds: [payload.user_id] })
 
@@ -201,9 +234,44 @@ export function connectPresence(
             }
             userIds.push(member.user_id)
           }
+          const other = payload.members.find(
+            (member: unknown) => isRecord(member) && member.user_id !== selfId
+          ) as unknown
+          const next =
+            userIds.length === 2 &&
+            selfId &&
+            isRecord(other) &&
+            typeof other.user_id === 'string' &&
+            typeof other.generation === 'string'
+              ? {
+                  roomId,
+                  userId: other.user_id,
+                  generation: other.generation,
+                  initiator: selfId < other.user_id
+                }
+              : null
+          if (peer?.userId !== next?.userId || peer?.generation !== next?.generation) {
+            peer = next
+            audio({ peer })
+          }
           publish({ phase: 'online', roomId, userIds })
           break
         }
+
+        case 'offer':
+        case 'answer':
+          if (
+            peer &&
+            payload.room_id === roomId &&
+            payload.target_generation === generation &&
+            payload.from_user_id === peer.userId &&
+            payload.from_generation === peer.generation &&
+            payload.type === (peer.initiator ? 'answer' : 'offer') &&
+            typeof payload.sdp === 'string' &&
+            Buffer.byteLength(payload.sdp, 'utf8') <= 16384
+          )
+            audio({ peer, signal: { type: payload.type, sdp: payload.sdp } })
+          break
 
         case 'heartbeat_ack':
           if (
@@ -249,5 +317,5 @@ export function connectPresence(
 
   publish({ phase: 'connecting', roomId })
   start(accessToken)
-  return stop
+  return { stop, sendAudio }
 }

@@ -8,8 +8,17 @@ import type {
   LogoutResult,
   PresenceState
 } from '../shared/auth'
+import type { AudioEvent } from '../shared/audio'
 
 const api: DesktopApi = {
+  sendAudio: (peer, signal) => ipcRenderer.invoke('audio:send', peer, signal) as Promise<boolean>,
+  onAudio: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, value: AudioEvent): void => listener(value)
+    ipcRenderer.on('audio:event', handler)
+    return () => {
+      ipcRenderer.removeListener('audio:event', handler)
+    }
+  },
   login: (username, password) =>
     ipcRenderer.invoke('auth:login', username, password) as Promise<LoginResult>,
 

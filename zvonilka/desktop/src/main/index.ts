@@ -27,12 +27,13 @@ interface WindowSession {
 const sessions = new WeakMap<WebContents, WindowSession>()
 const loginAttempts = new WeakMap<WebContents, object>()
 
-const presenceByWindow = new WeakMap<WebContents, { stop?: () => void }>()
+type PresenceConnection = Partial<ReturnType<typeof connectPresence>>
+const presenceByWindow = new WeakMap<WebContents, PresenceConnection>()
 
 function stopPresence(sender: WebContents): void {
   const connection = presenceByWindow.get(sender)
-  presenceByWindow.delete(sender)
   connection?.stop?.()
+  presenceByWindow.delete(sender)
 }
 
 function clearSession(sender: WebContents): void {
@@ -246,37 +247,50 @@ app.whenReady().then(() => {
     if (!session) return { ok: false, error: 'sign_in_required' }
 
     stopPresence(sender)
-    const connection: { stop?: () => void } = {}
+    const connection: PresenceConnection = {}
     presenceByWindow.set(sender, connection)
 
     let socketTokens = session.tokens
 
-    connection.stop = connectPresence(
-      input.toLowerCase(),
-      socketTokens.accessToken,
-      async () => {
-        if (presenceByWindow.get(sender) !== connection) {
-          return { ok: false, error: 'unexpected' }
-        }
+    Object.assign(
+      connection,
+      connectPresence(
+        input.toLowerCase(),
+        socketTokens.accessToken,
+        async () => {
+          if (presenceByWindow.get(sender) !== connection) {
+            return { ok: false, error: 'unexpected' }
+          }
 
-        const result = await refreshForWindow(sender, session, socketTokens)
-        if (result.ok) socketTokens = session.tokens
-        return result
-      },
-      (state: PresenceState) => {
-        if (sender.isDestroyed() || presenceByWindow.get(sender) !== connection) return
-        sender.send('presence:state', state)
+          const result = await refreshForWindow(sender, session, socketTokens)
+          if (result.ok) socketTokens = session.tokens
+          return result
+        },
+        (state: PresenceState) => {
+          if (sender.isDestroyed() || presenceByWindow.get(sender) !== connection) return
+          sender.send('presence:state', state)
 
-        if (state.phase === 'ended') {
-          presenceByWindow.delete(sender)
-          if (state.reason === 'sign_in_required' && sessions.get(sender) === session) {
-            clearSession(sender)
+          if (state.phase === 'ended') {
+            presenceByWindow.delete(sender)
+            if (state.reason === 'sign_in_required' && sessions.get(sender) === session) {
+              clearSession(sender)
+            }
+          }
+        },
+        (audio) => {
+          if (!sender.isDestroyed() && presenceByWindow.get(sender) === connection) {
+            sender.send('audio:event', audio)
           }
         }
-      }
+      )
     )
 
     return { ok: true, value: null }
+  })
+
+  ipcMain.handle('audio:send', (event, peer: unknown, signal: unknown): boolean => {
+    if (!isTrustedRenderer(event) || !sessions.has(event.sender)) return false
+    return presenceByWindow.get(event.sender)?.sendAudio?.(peer, signal) ?? false
   })
 
   ipcMain.handle('presence:disconnect', (event): void => {

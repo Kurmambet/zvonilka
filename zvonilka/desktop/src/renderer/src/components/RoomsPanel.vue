@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import RoomAudio from './RoomAudio.vue'
 import { ref, computed, onBeforeUnmount } from 'vue'
 import type { RoomError, RoomResult, RoomSummary, PresenceState } from '../../../shared/auth'
 
@@ -291,6 +292,7 @@ function openRoom(): Promise<void> {
 
       <section class="room-card room-presence" aria-label="Подключение к комнате">
         <h3>Подключение</h3>
+        <RoomAudio />
 
         <p v-if="presenceNotice" class="presence-notice" role="status">
           {{ presenceNotice }}

@@ -16,6 +16,11 @@ export type LoginError =
 export type LoginResult = { ok: true; profile: Profile } | { ok: false; error: LoginError }
 
 export interface DesktopApi {
+  sendAudio: (
+    peer: import('./audio').AudioPeer,
+    signal: import('./audio').AudioSignal
+  ) => Promise<boolean>
+  onAudio: (listener: (event: import('./audio').AudioEvent) => void) => () => void
   login(username: string, password: string): Promise<LoginResult>
   createRoom(): Promise<RoomResult<RoomSummary>>
   issueInvitation(roomId: string): Promise<RoomResult<string>>
