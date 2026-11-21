@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
 import type { ComponentPublicInstance } from 'vue'
-import type { AudioPeer, AudioSignal } from '../../../shared/audio'
+import type { AudioPeer, AudioSignal, WsDiagnostic } from '../../../shared/audio'
 import { useCallDiagnostics } from '../composables/useCallDiagnostics'
 import type { LinkDiagnostic } from '../composables/useCallDiagnostics'
 
@@ -53,6 +53,35 @@ let diagnosticTimer = 0
 let copyRequest = 0
 let routeRequest = 0
 
+const wsDiagnostics = shallowRef<WsDiagnostic[]>([])
+let currentAuthRequestId: string | undefined
+
+function recordWs(item: WsDiagnostic): void {
+  if (item.event === 'ws.started') {
+    diagnostics.reset()
+    copyRequest++
+    diagnosticsText.value = ''
+    diagnosticsStatus.value = ''
+    currentAuthRequestId = undefined
+    wsDiagnostics.value = [item]
+    return
+  }
+
+  // Поздний close от сокета, который заменили после обновления токена,
+  // не должен выглядеть как закрытие новой попытки.
+  if (item.event === 'ws.attempt') currentAuthRequestId = item.authRequestId
+  if (item.authRequestId && item.authRequestId !== currentAuthRequestId) return
+
+  const rows = wsDiagnostics.value
+  if (item.event === 'ws.heartbeat-ack') {
+    wsDiagnostics.value = [...rows.filter((row) => row.event !== 'ws.heartbeat-ack'), item].slice(
+      -64
+    )
+  } else {
+    wsDiagnostics.value = [...rows, item].slice(-64)
+  }
+}
+
 function key(peer: AudioPeer): string {
   return `${peer.roomId}:${peer.userId}:${peer.generation}`
 }
@@ -71,7 +100,32 @@ function setNote(link: Link, text: string): void {
 
 async function copyDiagnostics(kind: 'summary' | 'json'): Promise<void> {
   const attempt = ++copyRequest
-  const text = diagnostics.format(props.displayName ?? '', kind)
+  const media = diagnostics.format(props.displayName ?? '', kind)
+  const rows = wsDiagnostics.value
+
+  const text =
+    kind === 'json'
+      ? JSON.stringify({ ...JSON.parse(media), websocket: rows })
+      : [
+          media,
+          '',
+          'WebSocket:',
+          ...(rows.length
+            ? rows.map((row) =>
+                [
+                  row.at,
+                  row.event,
+                  row.authRequestId ? `auth=${row.authRequestId}` : '',
+                  row.generation ? `generation=${row.generation}` : '',
+                  row.reason ? `reason=${row.reason}` : '',
+                  row.closeCode !== undefined ? `close=${row.closeCode}` : '',
+                  row.wasClean !== undefined ? `clean=${row.wasClean}` : ''
+                ]
+                  .filter(Boolean)
+                  .join(' · ')
+              )
+            : ['нет данных'])
+        ].join('\n')
   diagnosticsText.value = ''
   diagnosticsStatus.value = ''
 
@@ -513,7 +567,9 @@ function update(next: AudioPeer[]): void {
 }
 
 const unsubscribe = window.api.onAudio((event) => {
-  if ('peers' in event) {
+  if ('wsDiagnostic' in event) {
+    recordWs(event.wsDiagnostic)
+  } else if ('peers' in event) {
     update(event.peers)
   } else if ('signal' in event) {
     const link = links.get(key(event.peer))
@@ -712,7 +768,7 @@ onBeforeUnmount(() => {
     </section>
   </div>
 
-  <details v-if="diagnosticsAvailable" class="diagnostics-panel">
+  <details v-if="diagnosticsAvailable || wsDiagnostics.length" class="diagnostics-panel">
     <summary>Диагностика звонка</summary>
     <div class="audio-controls">
       <button type="button" @click="copyDiagnostics('summary')">Скопировать сводку</button>

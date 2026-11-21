@@ -382,8 +382,7 @@ export function useCallDiagnostics(): CallDiagnostics {
     const lines = [
       `Отчёт клиента: ${author}`,
       `Начало наблюдения: ${startedAt ?? 'нет данных'}`,
-      `Экспорт: ${exportedAt}`,
-      'Причина завершения WebSocket пока не собирается.'
+      `Экспорт: ${exportedAt}`
     ]
 
     for (const link of links) {

@@ -129,6 +129,9 @@ curl -fsS "$ZVONILKA_SMOKE_BASE_URL/health/ready"
 # в момент, когда надо будет остановить докер, из другого терминала:
 docker compose --env-file .env.compose.local -f compose.dev.yaml stop api
 docker compose --env-file .env.compose.local -f compose.dev.yaml logs --tail=50 api
+docker compose --env-file .env.compose.local -f compose.dev.yaml logs -f --tail=50 api
+
+
 
 unset ZVONILKA_DEV_RATE_LIMIT_PREFIX ZVONILKA_DEV_ROOM_REGISTRY_KEY \
       ZVONILKA_DEV_ACCESS_TTL_SECONDS ZVONILKA_SMOKE_BASE_URL

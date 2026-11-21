@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import type { AudioEvent, AudioPeer } from '../shared/audio'
+import type { AudioEvent, AudioPeer, WsDiagnostic } from '../shared/audio'
 import type { PresenceState, RoomResult } from '../shared/auth'
 import { API_BASE_URL, isRecord } from './auth'
 
@@ -33,6 +33,13 @@ export function connectPresence(
   let peers = new Map<string, AudioPeer>()
   let transmit: (signal: Record<string, unknown>) => boolean = () => false
 
+  function diagnose(
+    event: WsDiagnostic['event'],
+    detail: Omit<WsDiagnostic, 'at' | 'event'> = {}
+  ): void {
+    audio({ wsDiagnostic: { ...detail, at: new Date().toISOString(), event } })
+  }
+
   function sendAudio(target: unknown, signal: unknown): boolean {
     if (!isRecord(target) || typeof target.userId !== 'string') return false
     const peer = peers.get(target.userId)
@@ -57,9 +64,10 @@ export function connectPresence(
     })
   }
 
-  function stop(): void {
+  function stop(reason = 'local_stop'): void {
     if (stopped) return
     stopped = true
+    diagnose('ws.ended', { reason })
     cleanupSocket?.()
     peers.clear()
     audio({ peers: [] })
@@ -67,7 +75,7 @@ export function connectPresence(
 
   function end(reason: string): void {
     if (stopped) return
-    stop()
+    stop(reason)
     publish({ phase: 'ended', roomId, reason })
   }
 
@@ -80,6 +88,8 @@ export function connectPresence(
   }
 
   function start(token: string): void {
+    const authId = randomUUID()
+    diagnose('ws.attempt', { authRequestId: authId })
     let socket: WebSocket
     try {
       socket = new WebSocket(url.href)
@@ -97,7 +107,6 @@ export function connectPresence(
     let heartbeatId: string | undefined
     let reauthId: string | undefined
     let refreshing = false
-    const authId = randomUUID()
     const joinTimer = setTimeout(() => end('join_timeout'), 10_000)
 
     function retire(): void {
@@ -127,6 +136,8 @@ export function connectPresence(
 
     async function retryInitialAuth(): Promise<void> {
       retriedInitialAuth = true
+      diagnose('ws.auth-retry', { authRequestId: authId, reason: 'invalid_access' })
+
       retire()
       const result = await renew()
       if (stopped) return
@@ -163,6 +174,8 @@ export function connectPresence(
     }
 
     socket.addEventListener('open', () => {
+      if (stopped || retired) return
+      diagnose('ws.open', { authRequestId: authId })
       send({
         type: 'authenticate',
         request_id: authId,
@@ -211,6 +224,7 @@ export function connectPresence(
           }
 
           generation = payload.generation
+          diagnose('ws.joined', { authRequestId: authId, generation })
           selfId = payload.user_id
           clearTimeout(joinTimer)
           publish({ phase: 'online', roomId, userIds: [payload.user_id] })
@@ -294,6 +308,7 @@ export function connectPresence(
             payload.request_id === heartbeatId &&
             payload.generation === generation
           ) {
+            diagnose('ws.heartbeat-ack', { authRequestId: authId, generation })
             clearTimeout(heartbeatTimer)
             heartbeatId = undefined
           }
@@ -323,13 +338,23 @@ export function connectPresence(
     })
 
     socket.addEventListener('error', () => {
-      if (!retired) end('transport_error')
+      if (retired) return
+      diagnose('ws.error', { authRequestId: authId, generation })
+      end('transport_error')
     })
-    socket.addEventListener('close', () => {
+
+    socket.addEventListener('close', ({ code, wasClean }) => {
+      diagnose('ws.close', {
+        authRequestId: authId,
+        generation,
+        closeCode: code,
+        wasClean
+      })
+
       if (!retired) end('disconnected')
     })
   }
-
+  diagnose('ws.started')
   publish({ phase: 'connecting', roomId })
   start(accessToken)
   return { stop, sendAudio }
