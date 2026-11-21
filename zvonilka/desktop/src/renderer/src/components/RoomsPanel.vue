@@ -291,33 +291,26 @@ function openRoom(): Promise<void> {
       </section>
 
       <section class="room-card room-presence" aria-label="Подключение к комнате">
-        <h3>Подключение</h3>
-        <RoomAudio />
+        <div class="presence-header">
+          <h3>Подключение</h3>
+          <p v-if="presence.phase === 'online'" role="status">
+            Онлайн: {{ presence.userIds.length }}
+          </p>
+          <button
+            v-if="presence.phase === 'connecting' || presence.phase === 'online'"
+            class="disconnect-button"
+            type="button"
+            @click="disconnect"
+          >
+            Отключиться
+          </button>
+        </div>
 
-        <p v-if="presenceNotice" class="presence-notice" role="status">
-          {{ presenceNotice }}
-        </p>
-
+        <p v-if="presenceNotice" class="presence-notice" role="status">{{ presenceNotice }}</p>
         <p v-if="presence.phase === 'connecting'" role="status">Подключаемся…</p>
+        <p v-else-if="presence.phase !== 'online'">Нет активного подключения.</p>
 
-        <template v-else-if="presence.phase === 'online'">
-          <p>Онлайн: {{ presence.userIds.length }}</p>
-          <ul class="online-list">
-            <li v-for="id in presence.userIds" :key="id">
-              {{ id === props.userId ? 'Вы' : id }}
-            </li>
-          </ul>
-        </template>
-
-        <p v-else>Нет активного подключения.</p>
-
-        <button
-          v-if="presence.phase === 'connecting' || presence.phase === 'online'"
-          type="button"
-          @click="disconnect"
-        >
-          Отключиться
-        </button>
+        <RoomAudio />
       </section>
     </div>
 
@@ -389,18 +382,8 @@ code {
   margin-top: 0.625rem;
 }
 
-.presence-notice,
-.online-list {
-  overflow-wrap: anywhere;
-  user-select: text;
-}
-
 .presence-notice {
   color: #ffd89b;
-}
-
-.online-list {
-  padding: 0;
 }
 
 @media (max-width: 680px) {
@@ -411,5 +394,42 @@ code {
   .room-presence {
     grid-row: 1;
   }
+}
+
+.room-presence {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.room-presence > button {
+  justify-self: stretch;
+  border: 1px solid #795052;
+  border-radius: 0.5rem;
+  background: transparent;
+  color: #ffb4ab;
+  cursor: pointer;
+}
+
+.room-presence > button:hover {
+  background: #3d292b;
+}
+
+.room-presence > button:focus-visible {
+  outline: 2px solid #9cc5ff;
+  outline-offset: 2px;
+}
+
+.presence-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.375rem 0.75rem;
+}
+
+.presence-header h3 {
+  margin-inline-end: auto;
+}
+
+.presence-header p {
+  font-size: 0.875rem;
 }
 </style>

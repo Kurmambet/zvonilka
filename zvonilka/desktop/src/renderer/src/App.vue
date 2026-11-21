@@ -141,17 +141,12 @@ async function logout(): Promise<void> {
     <h1>Zvonilka</h1>
 
     <section v-if="profile" aria-labelledby="profile-title">
-      <h2 id="profile-title">Профиль</h2>
-      <dl>
-        <dt>Имя пользователя</dt>
-        <dd>{{ profile.username }}</dd>
-        <dt>Отображаемое имя</dt>
-        <dd>{{ profile.display_name }}</dd>
-      </dl>
-      <button type="button" :disabled="loggingOut" @click="logout">
-        {{ loggingOut ? 'Выход…' : 'Выйти' }}
-      </button>
-
+      <div class="workspace-header">
+        <h2 id="profile-title">{{ profile.display_name }}</h2>
+        <button type="button" :disabled="loggingOut" @click="logout">
+          {{ loggingOut ? 'Выход…' : 'Выйти' }}
+        </button>
+      </div>
       <RoomsPanel v-if="!loggingOut" :user-id="profile.id" @sign-in-required="requireSignIn" />
     </section>
 
@@ -223,10 +218,13 @@ async function logout(): Promise<void> {
   background: var(--color-background-soft);
   max-height: calc(100vh - 2rem);
   overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--ev-c-gray-1) var(--color-background-soft);
 }
 
 .panel--workspace {
   width: min(60rem, calc(100vw - 2rem));
+  padding: clamp(0.75rem, 2vw, 1.125rem);
 }
 
 form,
@@ -256,5 +254,18 @@ dd {
   margin-top: 0.75rem;
   color: #ffb4ab;
   user-select: text;
+}
+.workspace-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.375rem 0.75rem;
+}
+
+.workspace-header h2 {
+  min-width: 0;
+  font-size: 1rem;
+  overflow-wrap: anywhere;
 }
 </style>

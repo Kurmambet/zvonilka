@@ -38,7 +38,59 @@ const testRecordingUrl = ref('')
 const testPlayer = ref<HTMLAudioElement | null>(null)
 let testRecorder: MediaRecorder | undefined
 
+const mutedPeers = ref<Record<string, boolean>>({})
+const testPlaying = ref(false)
+const testVolume = ref(100)
+
+function togglePeerMute(peer: AudioPeer): void {
+  const id = key(peer)
+  const player = links.get(id)?.player
+  if (!player) return
+
+  player.muted = !player.muted
+  mutedPeers.value[id] = player.muted
+
+  if (!player.muted && player.paused && player.srcObject) {
+    void player.play().catch(() => {})
+  }
+}
+
+function setPlayerVolume(player: HTMLAudioElement | null | undefined, event: Event): void {
+  const input = event.currentTarget
+  if (!player || !(input instanceof HTMLInputElement)) return
+  player.volume = input.valueAsNumber / 100
+}
+
+function setTestVolume(event: Event): void {
+  const input = event.currentTarget
+  if (!(input instanceof HTMLInputElement)) return
+  testVolume.value = input.valueAsNumber
+  setPlayerVolume(testPlayer.value, event)
+}
+
+function toggleTestPlayback(): void {
+  const player = testPlayer.value
+  if (!player) return
+
+  if (player.paused) {
+    void player.play().catch(() => {
+      microphoneError.value = 'Не удалось воспроизвести тестовую запись.'
+    })
+  } else {
+    player.pause()
+  }
+}
+
+function restartTestPlayback(): void {
+  const player = testPlayer.value
+  if (!player) return
+
+  player.currentTime = 0
+  if (player.paused) toggleTestPlayback()
+}
+
 function clearTestRecording(): void {
+  testPlaying.value = false
   testPlayer.value?.pause()
   if (testRecordingUrl.value) URL.revokeObjectURL(testRecordingUrl.value)
   testRecordingUrl.value = ''
@@ -69,6 +121,7 @@ function startTestRecording(input: MediaStream, attempt: number): void {
     testRecordingUrl.value = url
     void nextTick(() => {
       if (testRecordingUrl.value !== url) return
+      if (testPlayer.value) testPlayer.value.volume = testVolume.value
       void testPlayer.value?.play().catch(() => {
         // Если автовоспроизведение заблокировано, доступны controls.
       })
@@ -234,6 +287,7 @@ function setNote(link: Link, text: string): void {
 }
 
 function drop(link: Link): void {
+  delete mutedPeers.value[key(link.peer)]
   links.delete(key(link.peer))
   link.cancelGather?.()
   link.pc.ontrack = null
@@ -264,7 +318,7 @@ function play(link: Link): void {
   if (!link.player || !link.remote || link.player.srcObject === link.remote) return
   link.player.srcObject = link.remote
   void link.player.play().catch(() => {
-    if (current(link)) setNote(link, 'Нажмите Play в плеере.')
+    if (current(link)) setNote(link, 'Автозапуск не сработал. Нажмите кнопку звука дважды.')
   })
 }
 
@@ -442,65 +496,283 @@ onBeforeUnmount(() => {
 
 <template>
   <div v-if="peers.length" class="audio-links">
-    <label>
-      Микрофон
-      <select v-model="selectedMicrophone" :disabled="busy || testing || microphone">
-        <option value="">Системный по умолчанию</option>
-        <option
-          v-if="
-            selectedMicrophone && !microphones.some((item) => item.deviceId === selectedMicrophone)
-          "
-          :value="selectedMicrophone"
-          disabled
+    <section class="audio-section" aria-label="Ваш микрофон">
+      <div class="audio-heading">
+        <h4>Ваш микрофон</h4>
+        <span class="mic-state" :class="{ 'mic-state-live': microphone }" role="status">
+          {{ testing ? 'Идёт проверка' : microphone ? 'Включён в звонке' : 'Выключен в звонке' }}
+        </span>
+      </div>
+
+      <label class="device-field">
+        <span>Устройство ввода</span>
+        <select v-model="selectedMicrophone" :disabled="busy || testing || microphone">
+          <option value="">Системный по умолчанию</option>
+          <option
+            v-if="
+              selectedMicrophone &&
+              !microphones.some((item) => item.deviceId === selectedMicrophone)
+            "
+            :value="selectedMicrophone"
+            disabled
+          >
+            Выбранный микрофон недоступен
+          </option>
+          <option v-for="(item, index) in microphones" :key="item.deviceId" :value="item.deviceId">
+            {{ item.label || `Микрофон ${index + 1}` }}
+          </option>
+        </select>
+      </label>
+
+      <div class="mic-actions">
+        <button
+          class="call-button"
+          :class="{ 'call-button-live': microphone }"
+          type="button"
+          :disabled="busy || testing"
+          @click="toggleMicrophone"
         >
-          Выбранный микрофон недоступен
-        </option>
-        <option v-for="(item, index) in microphones" :key="item.deviceId" :value="item.deviceId">
-          {{ item.label || `Микрофон ${index + 1}` }}
-        </option>
-      </select>
-    </label>
-    <button type="button" :disabled="busy || microphone" @click="toggleMicrophoneTest">
-      {{ testing ? 'Остановить и прослушать' : 'Проверить микрофон' }}
-    </button>
-    <label v-if="testing">
-      Говорите в микрофон:
-      <meter :value="level" min="0" max="100" />
-    </label>
-    <div v-if="testRecordingUrl">
-      <p>Тестовая запись — слышите только вы</p>
-      <audio
-        ref="testPlayer"
-        :src="testRecordingUrl"
-        controls
-        aria-label="Тестовая запись микрофона"
-      />
-    </div>
-    <button type="button" :disabled="busy || testing" @click="toggleMicrophone">
-      {{ microphone ? 'Выключить микрофон' : 'Включить микрофон' }}
-    </button>
-    <p v-if="microphoneError" role="alert">{{ microphoneError }}</p>
-    <div v-for="peer in peers" :key="key(peer)">
-      <p class="peer-id">{{ peer.userId }}</p>
-      <p role="status">{{ notes[key(peer)] }}</p>
-      <audio :ref="(el) => bindPlayer(peer, el)" controls aria-label="Звук собеседника" />
-    </div>
+          {{ microphone ? 'Выключить микрофон' : 'Включить микрофон' }}
+        </button>
+        <button type="button" :disabled="busy || microphone" @click="toggleMicrophoneTest">
+          {{ testing ? 'Остановить и прослушать' : 'Проверить микрофон' }}
+        </button>
+      </div>
+
+      <label v-if="testing" class="test-level">
+        <span>Говорите в микрофон</span>
+        <meter :value="level" min="0" max="100" />
+      </label>
+
+      <div v-if="testRecordingUrl" class="audio-item">
+        <p class="audio-caption">Тестовая запись · слышите только вы</p>
+        <audio
+          ref="testPlayer"
+          :src="testRecordingUrl"
+          hidden
+          @play="testPlaying = true"
+          @pause="testPlaying = false"
+          @ended="testPlaying = false"
+        />
+        <div class="audio-controls">
+          <button type="button" :disabled="microphone || busy" @click="toggleTestPlayback">
+            {{ testPlaying ? 'Пауза' : 'Слушать' }}
+          </button>
+          <button type="button" :disabled="microphone || busy" @click="restartTestPlayback">
+            С начала
+          </button>
+          <input
+            type="range"
+            min="0"
+            max="100"
+            :value="testVolume"
+            aria-label="Громкость тестовой записи"
+            @input="setTestVolume"
+          />
+        </div>
+      </div>
+
+      <p v-if="microphoneError" class="audio-error" role="alert">{{ microphoneError }}</p>
+    </section>
+
+    <section class="audio-section" aria-label="Собеседники">
+      <div class="audio-heading">
+        <h4>Собеседники</h4>
+        <span class="peer-count">{{ peers.length }}</span>
+      </div>
+
+      <div v-for="(peer, index) in peers" :key="key(peer)" class="audio-item">
+        <div class="audio-heading">
+          <p>Собеседник {{ index + 1 }}</p>
+          <p v-if="notes[key(peer)]" class="audio-caption" role="status">
+            {{ notes[key(peer)] }}
+          </p>
+        </div>
+
+        <audio :ref="(el) => bindPlayer(peer, el)" hidden />
+
+        <div class="audio-controls">
+          <button
+            type="button"
+            :aria-label="`Заглушить собеседника ${index + 1}`"
+            :aria-pressed="!!mutedPeers[key(peer)]"
+            @click="togglePeerMute(peer)"
+          >
+            {{ mutedPeers[key(peer)] ? 'Звук выкл.' : 'Звук вкл.' }}
+          </button>
+          <input
+            type="range"
+            min="0"
+            max="100"
+            value="100"
+            :aria-label="`Громкость собеседника ${index + 1}`"
+            @input="setPlayerVolume(links.get(key(peer))?.player, $event)"
+          />
+        </div>
+      </div>
+    </section>
   </div>
 </template>
 
 <style scoped>
-.audio-links {
+.audio-links,
+.audio-section,
+.device-field,
+.mic-actions,
+.test-level,
+.audio-item {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+}
+
+.audio-links {
+  gap: 0.75rem;
+}
+
+.audio-section {
   gap: 0.625rem;
+  padding: 0.75rem;
+  border: 1px solid var(--ev-c-gray-3);
+  border-radius: 0.625rem;
+  background: var(--color-background-soft);
 }
 
-.peer-id {
-  overflow-wrap: anywhere;
-  user-select: text;
+.audio-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.25rem 0.625rem;
 }
 
-audio {
+.audio-heading h4 {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.mic-state,
+.peer-count {
+  padding: 0.125rem 0.5rem;
+  border-radius: 1rem;
+  background: var(--color-background-mute);
+  font-size: 0.8125rem;
+}
+
+.mic-state-live {
+  background: #203d32;
+  color: #b7f0d1;
+}
+
+.device-field,
+.mic-actions,
+.test-level,
+.audio-item {
+  gap: 0.375rem;
+}
+
+.device-field,
+.test-level,
+.audio-caption {
+  color: #c4c8d0;
+  font-size: 0.875rem;
+}
+
+.audio-links select,
+.audio-links button {
+  width: 100%;
+  min-width: 0;
+  padding: 0.5rem 0.625rem;
+  border: 1px solid var(--ev-c-gray-1);
+  border-radius: 0.5rem;
+  background: var(--color-background-mute);
+  color: var(--color-text);
+  color-scheme: dark;
+  font: inherit;
+}
+
+.audio-links button {
+  cursor: pointer;
+}
+
+.audio-links .call-button {
+  border-color: #5478ab;
+  background: #263c5b;
+}
+
+.audio-links .call-button-live {
+  border-color: #588872;
+  background: #203d32;
+}
+
+.audio-links button:not(:disabled):hover {
+  border-color: #9cc5ff;
+}
+
+.audio-links button:disabled,
+.audio-links select:disabled {
+  opacity: 0.65;
+  cursor: default;
+}
+
+.audio-links button:focus-visible,
+.audio-links select:focus-visible {
+  outline: 2px solid #9cc5ff;
+  outline-offset: 2px;
+}
+
+.test-level meter {
   display: block;
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.audio-item {
+  padding: 0.5rem;
+  border-radius: 0.5rem;
+  background: var(--color-background-mute);
+}
+
+.audio-error {
+  color: #ffb4ab;
+  overflow-wrap: anywhere;
+}
+
+.audio-links {
+  gap: 0.5rem;
+}
+
+.audio-section {
+  padding: 0.5rem;
+  gap: 0.5rem;
+}
+
+.mic-actions,
+.audio-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.mic-actions button {
+  flex: 1 1 8rem;
+  width: auto;
+}
+
+.audio-controls button {
+  width: auto;
+  min-height: 2rem;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.8125rem;
+}
+
+.audio-controls input[type='range'] {
+  flex: 1 1 5rem;
+  min-width: 0;
+  max-width: 100%;
+  min-height: 2rem;
+  accent-color: #9cc5ff;
 }
 </style>
