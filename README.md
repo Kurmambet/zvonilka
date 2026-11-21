@@ -226,3 +226,33 @@ cd zvonilka/desktop
 npm run typecheck && npm run lint
 npm run dev
 ```
+
+Работа на Шindows:
+
+```bash
+node -e "console.log('ZVONILKA_DEV_JWT_SECRET=' + require('node:crypto').randomBytes(48).toString('hex'))" Set-Content -Encoding ascii .env.compose.local
+
+docker compose version
+docker compose --env-file .env.compose.local -f compose.dev.yaml up -d
+curl.exe -fsS http://127.0.0.1:8001/health/ready
+
+
+
+
+
+cd zvonilka\desktop
+npm.cmd ci
+npm.cmd run typecheck
+npm.cmd run lint
+npm.cmd run dev
+
+test1
+oioioi_Test-1
+
+test2
+oioioi_Test-2
+
+test3
+oioioi_Test-3
+
+```

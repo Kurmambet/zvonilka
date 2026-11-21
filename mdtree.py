@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+# Windows: интерактивный режим работает через msvcrt, без windows-curses.
+# Linux/macOS: интерактивный режим использует curses.
+
+
+# Запуск: uv run mdtree.py [--clean | --no-redact | -i]
 # Запуск: python3 mdtree.py  (или python3 mdtree.py -i)
 
 # uv run mdtree.py --no-redact              # вообще не искать секреты
@@ -6,12 +11,27 @@
 # uv run mdtree.py --no-redact-format       # выключить только format-regex
 # uv run mdtree.py --clean                  # убрать пробелы, комментарии
 # до 50-100K токенов. если проект вырастет за 150-200K, стоит подавать частями через интерактивный режим
+
+
+# ↑/↓ или j/k — перемещение;
+# → / Enter — раскрыть каталог;
+# ← / Backspace — свернуть / перейти к родителю;
+# Space — выбрать файл или каталог рекурсивно;
+# F — сформировать Markdown;
+# Q — отмена.
+
+
 import argparse
-import curses
 import json
 import os
 import re
+import shutil
 import sys
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import curses
 
 try:
     import pathspec
@@ -39,14 +59,11 @@ except ImportError:
 CONFIG_FILE = "mdtree_config.json"
 PROFILES_FILE = "mdtree_profiles.json"
 OUTPUT_FILE = "project_structure.md"
-
-TREE_BRANCH = chr(0x251C) + chr(0x2500) * 2 + " "
-TREE_LAST = chr(0x2514) + chr(0x2500) * 2 + " "
-TREE_VERT = chr(0x2502) + "   "
+TREE_BRANCH = "├── "
+TREE_LAST = "└── "
+TREE_VERT = "│   "
 TREE_SPACE = "    "
-
 COMMENT_PREFIXES = ("#", "//", "/*")
-
 TYPED_LANG_COLON_EXEMPT = {
     ".py",
     ".ts",
@@ -62,10 +79,7 @@ TYPED_LANG_COLON_EXEMPT = {
     ".h",
     ".hpp",
 }
-
-# языки/файлы, где комментарии начинаются с "#" (Python, YAML, TOML, Dockerfile)
 HASH_COMMENT_EXTS = (".py", ".yml", ".yaml", ".toml")
-# языки, где есть блочные /* */ комментарии и однострочные //
 BLOCK_COMMENT_EXTS = (".js", ".ts", ".css", ".vue", ".tsx")
 
 DEFAULT_CONFIG = {
@@ -84,8 +98,8 @@ DEFAULT_CONFIG = {
         "dev-dist",
     ],
     "skip_content_dirs": [
-        # "alembic/versions",
-        # "backend/alembic",
+        "alembic/versions",
+        "backend/alembic",
         "node_modules",
         ".vscode",
         "public",
@@ -95,6 +109,7 @@ DEFAULT_CONFIG = {
         ".dockerignore",
         "uv.lock",
         ".gitignore",
+        "alembic.ini",
         "README.md",
         "README",
         "notes.txt",
@@ -103,6 +118,19 @@ DEFAULT_CONFIG = {
         "tsconfig.node.json",
         "tsconfig.json",
         "tsconfig.app.json",
+        "tree.py",
+        "docker-compose.dev.yml",
+        "seed_messages.py",
+        "generate_secret.py",
+        "pyproject.toml",
+        "__init__.py",
+        "rate_limiter.py",
+        "exceptions.py",
+        "useVideoRecorder.ts",
+        "useVoiceRecorder.ts",
+        "useAuth.ts",
+        "player.ts",
+        "tailwind.config.ts",
     ],
     "include_extensions": [
         ".py",
@@ -121,17 +149,8 @@ DEFAULT_CONFIG = {
         ".dockerignore",
         "Dockerfile",
         ".tsx",
-        ".lua",
     ],
-    "exclude_extensions": [
-        ".woff2",
-        ".png",
-        ".jpg",
-        ".jpeg",
-        ".ico",
-        ".svg",
-        ".lock",
-    ],
+    "exclude_extensions": [".woff2", ".png", ".jpg", ".jpeg", ".ico", ".svg", ".lock"],
     "secret_keywords": [
         "SECRET",
         "PASSWORD",
@@ -193,7 +212,7 @@ class GitignoreResolver:
                     lines = f.read().splitlines()
                 spec = pathspec.PathSpec.from_lines("gitwildmatch", lines)
                 self.specs.append((dirpath, spec))
-            except (OSError, UnicodeDecodeError) as e:
+            except OSError as e:
                 warn(f"не удалось прочитать {gi_path}: {e}")
 
     def is_ignored(self, abs_path):
@@ -202,8 +221,7 @@ class GitignoreResolver:
         for base_dir, spec in self.specs:
             if not (abs_path == base_dir or abs_path.startswith(base_dir + os.sep)):
                 continue
-            rel = os.path.relpath(abs_path, base_dir)
-            rel = rel.replace(os.sep, "/")
+            rel = os.path.relpath(abs_path, base_dir).replace(os.sep, "/")
             if spec.match_file(rel):
                 return True
         return False
@@ -213,9 +231,7 @@ GITIGNORE = GitignoreResolver(".") if USE_GITIGNORE else None
 
 
 def is_gitignored(path):
-    if GITIGNORE is None:
-        return False
-    return bool(GITIGNORE.is_ignored(os.path.abspath(path)))
+    return GITIGNORE is not None and GITIGNORE.is_ignored(os.path.abspath(path))
 
 
 def _split_words(identifier):
@@ -236,18 +252,20 @@ def is_secret_identifier(identifier):
     words = _split_words(identifier)
     for seq in _KEYWORD_WORD_SEQS:
         n = len(seq)
-        if n == 0:
-            continue
         for i in range(len(words) - n + 1):
             if words[i : i + n] == seq:
                 return True
     return False
 
 
-_LINE_KV_RE = re.compile(r"^([ \t]*)([\'\"]?)([A-Za-z_][A-Za-z0-9_]*)\2([ \t]*[:=][ \t]*)(.*)$")
-_QUOTED_VALUE_RE = re.compile(r"^([\'\"])(.*)\1(.*)$")
+_LINE_KV_RE = re.compile(
+    r"^([ \t]*)(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\2([ \t]*[:=][ \t]*)(.*)$"
+)
+_QUOTED_VALUE_RE = re.compile(r"^(['\"])(.*)\1(.*)$")
 _BARE_TOKEN_RE = re.compile(r"^(\$\{[^}]*\}|\$\w+|[^\s,;#]+)(.*)$")
-_CODE_REF_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*|\[[^\]\n]*\])+$")
+_CODE_REF_RE = re.compile(
+    r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*|\[[^\]\n]*\])+$"
+)
 
 
 def is_code_reference(token):
@@ -263,38 +281,25 @@ def _redact_line(line, ext, hits):
     indent, quote, identifier, sep, rest = m.groups()
     if not is_secret_identifier(identifier):
         return line
-
     sep_char = ":" if ":" in sep else "="
     if sep_char == ":" and ext in TYPED_LANG_COLON_EXEMPT:
         return line
-
     rest_stripped = rest.strip()
-    if not rest_stripped:
+    if not rest_stripped or rest_stripped[0] in "[{(":
         return line
-
-    # начало многострочной структуры ("KEY = [", "KEY = {", "KEY = (") -
-    # это не литеральный секрет, а открывающая скобка списка/словаря/кортежа
-    if rest_stripped[0] in "[{(":
-        return line
-
     qm = _QUOTED_VALUE_RE.match(rest_stripped)
     if qm:
         q, _, tail = qm.groups()
         hits.append(identifier)
         return f"{indent}{quote}{identifier}{quote}{sep.rstrip()} {q}{q}{tail}"
-
     if "(" in rest_stripped:
         return line
-
     tm = _BARE_TOKEN_RE.match(rest_stripped)
     if not tm:
         return line
     token, tail = tm.groups()
-    if token.startswith("$"):
+    if token.startswith("$") or is_code_reference(token):
         return line
-    if is_code_reference(token):
-        return line
-
     hits.append(identifier)
     return f"{indent}{quote}{identifier}{quote}{sep.rstrip()}{tail}"
 
@@ -320,7 +325,6 @@ FORMAT_SECRET_PATTERNS = [
         "PRIVATE_KEY_BLOCK_REDACTED",
     ),
 ]
-
 REDACTION_LOG = {}
 
 
@@ -333,27 +337,21 @@ def redact_secrets(
 ):
     ext = os.path.splitext(filename)[1]
     hits = []
-
     if use_keywords:
-        lines = content.split("\n")
-        lines = [_redact_line(ln, ext, hits) for ln in lines]
-        content = "\n".join(lines)
-
+        content = "\n".join(_redact_line(ln, ext, hits) for ln in content.split("\n"))
     if use_format_regex:
         for pattern, placeholder in FORMAT_SECRET_PATTERNS:
             n_before = len(pattern.findall(content))
             if n_before:
                 hits.extend([placeholder] * n_before)
             content = pattern.sub(placeholder, content)
-
     if filename_for_log is not None and hits:
         REDACTION_LOG.setdefault(filename_for_log, []).extend(hits)
-
     return content
 
 
-TRIPLE_DQ = chr(34) * 3
-TRIPLE_SQ = chr(39) * 3
+TRIPLE_DQ = '"' * 3
+TRIPLE_SQ = "'" * 3
 
 
 def _is_dockerfile(filename):
@@ -362,19 +360,15 @@ def _is_dockerfile(filename):
 
 def clean_code(content, filename):
     ext = os.path.splitext(filename)[1]
-    is_dockerfile = _is_dockerfile(filename)
-    is_hash_comment = ext in HASH_COMMENT_EXTS or is_dockerfile
+    is_hash_comment = ext in HASH_COMMENT_EXTS or _is_dockerfile(filename)
     is_block_comment = ext in BLOCK_COMMENT_EXTS
-
     if is_block_comment:
         content = re.sub(r"/\*[\s\S]*?\*/", "", content)
     elif ext == ".py":
         content = re.sub(TRIPLE_DQ + r".*?" + TRIPLE_DQ, "", content, flags=re.DOTALL)
         content = re.sub(TRIPLE_SQ + r".*?" + TRIPLE_SQ, "", content, flags=re.DOTALL)
-
-    lines = content.split("\n")
     cleaned_lines = []
-    for i, line in enumerate(lines):
+    for i, line in enumerate(content.split("\n")):
         stripped = line.strip()
         if i == 0 and stripped.startswith(COMMENT_PREFIXES):
             cleaned_lines.append(line)
@@ -409,7 +403,6 @@ LANG_MAP = {
     ".md": "markdown",
     "Dockerfile": "dockerfile",
     ".tsx": "tsx",
-    ".lua": "lua",
 }
 
 
@@ -439,11 +432,14 @@ def file_is_ignored(full_path):
 
 
 def content_is_skippable(rel_path, filename):
-    if filename in SKIP_CONTENT_FILES:
+    if filename in SKIP_CONTENT_FILES or not is_valid_ext(filename):
         return True
-    if not is_valid_ext(filename):
-        return True
-    return any(rel_path.startswith(d.replace("/", os.sep)) for d in SKIP_CONTENT_DIRS)
+    # Нормализация нужна для путей из Windows (\) и настроек с /.
+    rel = rel_path.replace("\\", "/")
+    return any(
+        rel.startswith(d.replace("\\", "/").rstrip("/") + "/")
+        for d in SKIP_CONTENT_DIRS
+    )
 
 
 def generate_tree(root_path="."):
@@ -451,40 +447,40 @@ def generate_tree(root_path="."):
         lines = []
         try:
             items = os.listdir(current_dir)
-        except PermissionError:
+        except OSError:
             return lines
         dirs = sorted(
-            [
-                d
-                for d in items
-                if os.path.isdir(os.path.join(current_dir, d))
-                and not dir_is_excluded(d, os.path.join(current_dir, d))
-            ]
+            d
+            for d in items
+            if os.path.isdir(os.path.join(current_dir, d))
+            and not dir_is_excluded(d, os.path.join(current_dir, d))
         )
         files = sorted(
-            [
-                f
-                for f in items
-                if os.path.isfile(os.path.join(current_dir, f))
-                and not file_is_ignored(os.path.join(current_dir, f))
-            ]
+            f
+            for f in items
+            if os.path.isfile(os.path.join(current_dir, f))
+            and not file_is_ignored(os.path.join(current_dir, f))
         )
         all_entries = [(d, True) for d in dirs] + [(f, False) for f in files]
-        count = len(all_entries)
         for i, (name, is_dir) in enumerate(all_entries):
-            is_last = i == count - 1
-            connector = TREE_LAST if is_last else TREE_BRANCH
-            lines.append(f"{prefix}{connector}{name}{'/' if is_dir else ''}")
+            is_last = i == len(all_entries) - 1
+            lines.append(
+                f"{prefix}{TREE_LAST if is_last else TREE_BRANCH}{name}{'/' if is_dir else ''}"
+            )
             if is_dir:
                 new_prefix = prefix + (TREE_SPACE if is_last else TREE_VERT)
                 lines.extend(build_tree(os.path.join(current_dir, name), new_prefix))
         return lines
 
-    root_name = "./" if root_path == "." else f"{os.path.basename(os.path.abspath(root_path))}/"
+    root_name = (
+        "./" if root_path == "." else f"{os.path.basename(os.path.abspath(root_path))}/"
+    )
     return "\n".join([root_name] + build_tree(root_path))
 
 
-def generate_file_contents(root_path=".", clean=False, use_keywords=True, use_format_regex=True):
+def generate_file_contents(
+    root_path=".", clean=False, use_keywords=True, use_format_regex=True
+):
     content_lines = []
     for root, dirs, files in os.walk(root_path):
         dirs[:] = [d for d in dirs if not dir_is_excluded(d, os.path.join(root, d))]
@@ -492,19 +488,14 @@ def generate_file_contents(root_path=".", clean=False, use_keywords=True, use_fo
         for filename in sorted(files):
             filepath = os.path.join(root, filename)
             rel_path = os.path.relpath(filepath, root_path)
-
-            if content_is_skippable(rel_path, filename):
+            if content_is_skippable(rel_path, filename) or file_is_ignored(filepath):
                 continue
-            if file_is_ignored(filepath):
-                continue
-
             try:
                 with open(filepath, "r", encoding="utf-8") as f:
                     content = f.read()
             except (OSError, UnicodeDecodeError) as e:
                 content_lines.append(f"\n## {rel_path}\n```{e}```\n")
                 continue
-
             if use_keywords or use_format_regex:
                 content = redact_secrets(
                     content,
@@ -515,15 +506,14 @@ def generate_file_contents(root_path=".", clean=False, use_keywords=True, use_fo
                 )
             if clean:
                 content = clean_code(content, filename)
-            lang = get_lang(filename)
             content_lines.append(f"\n## {rel_path}\n")
-            content_lines.append(f"```{lang}\n{content}\n```\n")
+            content_lines.append(f"```{get_lang(filename)}\n{content}\n```\n")
     return "\n".join(content_lines)
 
 
 def render_redaction_report():
     if not REDACTION_LOG:
-        return "\n\n---"
+        return "\n\n---\n\n# Отредактированные секреты\n\nНичего не найдено/заменено.\n"
     lines = ["\n\n---\n\n# Отредактированные секреты\n"]
     total = 0
     for rel_path, hits in sorted(REDACTION_LOG.items()):
@@ -538,7 +528,7 @@ def render_redaction_report():
 def run_full_mode(clean=False, use_keywords=True, use_format_regex=True):
     REDACTION_LOG.clear()
     with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-        f.write("# Project Structure\n\n## Directory Tree\n\n```")
+        f.write("# Project Structure\n\n## Directory Tree\n\n```\n")
         f.write(generate_tree("."))
         f.write("\n```\n\n---\n\n# File Contents\n")
         f.write(
@@ -553,7 +543,9 @@ def run_full_mode(clean=False, use_keywords=True, use_format_regex=True):
     size = os.path.getsize(OUTPUT_FILE)
     with open(OUTPUT_FILE, "r", encoding="utf-8") as f:
         full_text = f.read()
-    print(f"SUCCESS! Size: {size / 1024:.2f} KB, tokens ({TOKEN_MODE}): {count_tokens(full_text)}")
+    print(
+        f"SUCCESS! Size: {size / 1024:.2f} KB, tokens ({TOKEN_MODE}): {count_tokens(full_text)}"
+    )
 
 
 class Node:
@@ -573,23 +565,19 @@ class Node:
             return
         try:
             items = os.listdir(self.path)
-        except PermissionError:
+        except OSError:
             return
         dirs = sorted(
-            [
-                d
-                for d in items
-                if os.path.isdir(os.path.join(self.path, d))
-                and not dir_is_excluded(d, os.path.join(self.path, d))
-            ]
+            d
+            for d in items
+            if os.path.isdir(os.path.join(self.path, d))
+            and not dir_is_excluded(d, os.path.join(self.path, d))
         )
         files = sorted(
-            [
-                f
-                for f in items
-                if os.path.isfile(os.path.join(self.path, f))
-                and not file_is_ignored(os.path.join(self.path, f))
-            ]
+            f
+            for f in items
+            if os.path.isfile(os.path.join(self.path, f))
+            and not file_is_ignored(os.path.join(self.path, f))
         )
         for d in dirs:
             self.children.append(Node(d, os.path.join(self.path, d), True, self))
@@ -639,17 +627,17 @@ def estimate_tokens_for_selection(node):
 
 
 def apply_profile_selection(root, rel_files):
-    rel_set = set(rel_files)
+    # В профилях сохраняем переносимые пути с /, включая профили из Linux.
+    rel_set = {p.replace("\\", "/") for p in rel_files}
 
     def mark(node):
-        rel = os.path.relpath(node.path, ".")
+        rel = os.path.relpath(node.path, ".").replace("\\", "/")
         if not node.is_dir:
             if rel in rel_set:
                 node.selected = True
             return
         node.load_children()
-        needs_expand = any(rf == rel or rf.startswith(rel + os.sep) for rf in rel_set)
-        if needs_expand:
+        if any(rf == rel or rf.startswith(rel + "/") for rf in rel_set):
             node.expanded = True
         for c in node.children:
             mark(c)
@@ -664,80 +652,149 @@ def load_profiles():
         return json.load(f)
 
 
-def picker(stdscr, initial_selection=None):
-    curses.curs_set(0)
-    curses.start_color()
-    curses.use_default_colors()
-    curses.init_pair(1, curses.COLOR_GREEN, -1)
-    curses.init_pair(2, curses.COLOR_YELLOW, -1)
-
+def _new_picker_root(initial_selection):
     root = Node(".", ".", True)
     root.expanded = True
     root.load_children()
-
     if initial_selection:
         apply_profile_selection(root, initial_selection)
+    return root
 
-    cursor = 0
-    top = 0
 
+def _move_picker(root, cursor, visible, key):
+    node, _ = visible[cursor]
+    if key == "up":
+        cursor = max(0, cursor - 1)
+    elif key == "down":
+        cursor = min(len(visible) - 1, cursor + 1)
+    elif key == "right":
+        if node.is_dir:
+            node.load_children()
+            node.expanded = True
+    elif key == "left":
+        if node.is_dir and node.expanded and node.children:
+            node.expanded = False
+        elif node.parent is not None:
+            for i, (other, _) in enumerate(visible):
+                if other is node.parent:
+                    cursor = i
+                    break
+            node.parent.expanded = False
+    elif key == "space":
+        set_selected_recursive(node, not node.selected)
+    return cursor
+
+
+def windows_picker(initial_selection=None):
+    root = _new_picker_root(initial_selection)
+    cursor = top = 0
     while True:
         visible = flatten(root)
+        cursor = min(cursor, len(visible) - 1)
+        width, height = shutil.get_terminal_size((100, 25))
+        page = max(1, height - 5)
+        top = min(top, cursor)
+        if cursor >= top + page:
+            top = cursor - page + 1
+        n_files, approx_tokens = estimate_tokens_for_selection(root)
+        os.system("cls")
+        print("↑/↓ или j/k: выбор | →/Enter: открыть | ←/Backspace: назад")
+        print("Пробел: отметить | F: готово | Q: выход")
+        print(
+            f"Файлов: {n_files} | ~токенов: {approx_tokens} | {cursor + 1}/{len(visible)}"
+        )
+        for idx in range(top, min(top + page, len(visible))):
+            node, depth = visible[idx]
+            mark = "[x]" if node.selected else "[ ]"
+            arrow = ("v " if node.expanded else "> ") if node.is_dir else ""
+            line = (
+                f"{'  ' * depth}{mark} {arrow}{node.name}{'/' if node.is_dir else ''}"
+            )
+            print(("> " if idx == cursor else "  ") + line[: max(1, width - 3)])
+        print("-" * min(width, 60))
+        ch = msvcrt.getwch()
+        if ch in ("\x00", "\xe0"):
+            scan = msvcrt.getwch()
+            key = {"H": "up", "P": "down", "M": "right", "K": "left"}.get(scan)
+        else:
+            key = {
+                "k": "up",
+                "j": "down",
+                "l": "right",
+                "h": "left",
+                "\r": "right",
+                "\x08": "left",
+                " ": "space",
+                "f": "finish",
+                "q": "quit",
+            }.get(ch.lower())
+        if key == "quit" or ch == "\x03":
+            return None, None
+        if key == "finish":
+            break
+        cursor = _move_picker(root, cursor, visible, key)
+    selected_files = []
+    collect_selected_files(root, selected_files)
+    return root, selected_files
+
+
+def picker(stdscr, initial_selection=None):
+    curses.curs_set(0)
+    curses.start_color()
+    try:
+        curses.use_default_colors()
+        bg = -1
+    except curses.error:
+        bg = curses.COLOR_BLACK
+    curses.init_pair(1, curses.COLOR_GREEN, bg)
+    curses.init_pair(2, curses.COLOR_YELLOW, bg)
+    root = _new_picker_root(initial_selection)
+    cursor = top = 0
+    while True:
+        visible = flatten(root)
+        cursor = min(cursor, len(visible) - 1)
         h, w = stdscr.getmaxyx()
         stdscr.erase()
+        if h < 4 or w < 10:
+            stdscr.refresh()
+            continue
         header = "up/down move  right/Enter open  left/Backspace close/up  Space select  F finish  Q quit"
         stdscr.addnstr(0, 0, header, w - 1, curses.A_BOLD)
-
         n_files, approx_tokens = estimate_tokens_for_selection(root)
         status = f"Selected files: {n_files}  ~tokens (approx): {approx_tokens}"
         stdscr.addnstr(h - 1, 0, status, w - 1, curses.color_pair(2))
-
+        page = max(1, h - 2)
         top = min(top, cursor)
-        if cursor >= top + h - 3:
-            top = cursor - (h - 4)
-
-        for row, (node, depth) in enumerate(visible[top : top + h - 3]):
+        if cursor >= top + page:
+            top = cursor - page + 1
+        for row, (node, depth) in enumerate(visible[top : top + page]):
             idx = top + row
             mark = "[x]" if node.selected else "[ ]"
-            arrow = ""
-            if node.is_dir:
-                arrow = "v " if node.expanded else "> "
+            arrow = ("v " if node.expanded else "> ") if node.is_dir else ""
             name = node.name + ("/" if node.is_dir else "")
             line = f"{'  ' * depth}{mark} {arrow}{name}"
             attr = curses.A_REVERSE if idx == cursor else 0
             if node.selected:
                 attr |= curses.color_pair(1)
             stdscr.addnstr(row + 1, 0, line, w - 1, attr)
-
         stdscr.refresh()
         key = stdscr.getch()
-        node, depth = visible[cursor]
-
-        if key in (curses.KEY_UP, ord("k")):
-            cursor = max(0, cursor - 1)
-        elif key in (curses.KEY_DOWN, ord("j")):
-            cursor = min(len(visible) - 1, cursor + 1)
-        elif key in (curses.KEY_RIGHT, ord("l"), 10, 13):
-            if node.is_dir:
-                node.load_children()
-                node.expanded = True
-        elif key in (curses.KEY_LEFT, ord("h"), curses.KEY_BACKSPACE, 127):
-            if node.is_dir and node.expanded and node.children:
-                node.expanded = False
-            elif node.parent is not None:
-                parent_visible = flatten(root)
-                for i, (n, d) in enumerate(parent_visible):
-                    if n is node.parent:
-                        cursor = i
-                        break
-                node.parent.expanded = False
-        elif key == ord(" "):
-            set_selected_recursive(node, not node.selected)
-        elif key in (ord("f"), ord("F")):
-            break
-        elif key in (ord("q"), ord("Q")):
+        if key in (ord("q"), ord("Q")):
             return None, None
-
+        if key in (ord("f"), ord("F")):
+            break
+        action = None
+        if key in (curses.KEY_UP, ord("k")):
+            action = "up"
+        elif key in (curses.KEY_DOWN, ord("j")):
+            action = "down"
+        elif key in (curses.KEY_RIGHT, ord("l"), 10, 13):
+            action = "right"
+        elif key in (curses.KEY_LEFT, ord("h"), curses.KEY_BACKSPACE, 127):
+            action = "left"
+        elif key == ord(" "):
+            action = "space"
+        cursor = _move_picker(root, cursor, visible, action)
     selected_files = []
     collect_selected_files(root, selected_files)
     return root, selected_files
@@ -752,15 +809,16 @@ def build_sparse_tree(root):
         return any(has_selected_descendant(c) for c in node.children)
 
     def walk(node, prefix=""):
-        relevant = [c for c in node.children if c.selected or has_selected_descendant(c)]
-        count = len(relevant)
+        relevant = [
+            c for c in node.children if c.selected or has_selected_descendant(c)
+        ]
         for i, c in enumerate(relevant):
-            is_last = i == count - 1
-            connector = TREE_LAST if is_last else TREE_BRANCH
-            lines.append(f"{prefix}{connector}{c.name}{'/' if c.is_dir else ''}")
+            is_last = i == len(relevant) - 1
+            lines.append(
+                f"{prefix}{TREE_LAST if is_last else TREE_BRANCH}{c.name}{'/' if c.is_dir else ''}"
+            )
             if c.is_dir:
-                new_prefix = prefix + (TREE_SPACE if is_last else TREE_VERT)
-                walk(c, new_prefix)
+                walk(c, prefix + (TREE_SPACE if is_last else TREE_VERT))
 
     lines.append("./")
     walk(root)
@@ -769,11 +827,12 @@ def build_sparse_tree(root):
 
 def save_profile(selected_files, clean, use_keywords, use_format_regex):
     profiles = load_profiles()
-
     name = input("Profile name to save (Enter = skip): ").strip()
     if not name:
         return
-    rel_files = sorted({os.path.relpath(fp, ".") for fp in selected_files})
+    rel_files = sorted(
+        {os.path.relpath(fp, ".").replace("\\", "/") for fp in selected_files}
+    )
     profiles[name] = {
         "files": rel_files,
         "clean": clean,
@@ -806,19 +865,19 @@ DEFAULT_PROFILE_SETTINGS = {
 
 def run_interactive_mode():
     REDACTION_LOG.clear()
-
     profile = choose_profile_to_load()
     initial_selection = profile["files"] if profile is not None else None
-
-    result = curses.wrapper(picker, initial_selection)
-    root, selected_files = result
+    root, selected_files = (
+        windows_picker(initial_selection)
+        if os.name == "nt"
+        else curses.wrapper(picker, initial_selection)
+    )
     if root is None:
         print("Cancelled.")
         return
     if not selected_files:
         print("Nothing selected.")
         return
-
     settings = profile if profile is not None else DEFAULT_PROFILE_SETTINGS
     use_defaults = False
     if profile is not None:
@@ -831,7 +890,6 @@ def run_interactive_mode():
             .lower()
             != "n"
         )
-
     if use_defaults:
         clean = settings["clean"]
         use_keywords = settings["use_keywords"]
@@ -840,7 +898,9 @@ def run_interactive_mode():
         mode = input("Content mode: [c]lean or [r]aw? [c/r]: ").strip().lower()
         clean = mode != "r"
         use_keywords = (
-            input("Redact secrets by keyword (SECRET/TOKEN/PASSWORD/...)? [Y/n]: ").strip().lower()
+            input("Redact secrets by keyword (SECRET/TOKEN/PASSWORD/...)? [Y/n]: ")
+            .strip()
+            .lower()
             != "n"
         )
         use_format_regex = (
@@ -851,26 +911,21 @@ def run_interactive_mode():
             .lower()
             != "n"
         )
-
     tree_text = build_sparse_tree(root)
-
     content_lines = []
     skipped = []
     for filepath in sorted(set(selected_files)):
         rel_path = os.path.relpath(filepath, ".")
         filename = os.path.basename(filepath)
-
         if content_is_skippable(rel_path, filename):
             skipped.append(rel_path)
             continue
-
         try:
             with open(filepath, "r", encoding="utf-8") as f:
                 content = f.read()
         except (OSError, UnicodeDecodeError) as e:
             content_lines.append(f"\n## {rel_path}\n```{e}```\n")
             continue
-
         if use_keywords or use_format_regex:
             content = redact_secrets(
                 content,
@@ -881,10 +936,8 @@ def run_interactive_mode():
             )
         if clean:
             content = clean_code(content, filename)
-        lang = get_lang(filename)
         content_lines.append(f"\n## {rel_path}\n")
-        content_lines.append(f"```{lang}\n{content}\n```\n")
-
+        content_lines.append(f"```{get_lang(filename)}\n{content}\n```\n")
     full_text = (
         "# Project Structure (selected)\n\n## Directory Tree\n\n```\n"
         + tree_text
@@ -892,10 +945,8 @@ def run_interactive_mode():
         + "\n".join(content_lines)
         + render_redaction_report()
     )
-
     with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
         f.write(full_text)
-
     size = os.path.getsize(OUTPUT_FILE)
     print(
         f"SUCCESS! Size: {size / 1024:.2f} KB, files: {len(selected_files) - len(skipped)}, "
@@ -903,11 +954,13 @@ def run_interactive_mode():
     )
     if skipped:
         print(
-            f"Пропущено (в skip_content_files/skip_content_dirs/недопустимое расширение): {', '.join(skipped)}"
+            "Пропущено (в skip_content_files/skip_content_dirs/недопустимое расширение): "
+            + ", ".join(skipped)
         )
-
-    save = input("Save this file selection as a reusable profile? [y/N]: ").strip().lower()
-    if save == "y":
+    if (
+        input("Save this file selection as a reusable profile? [y/N]: ").strip().lower()
+        == "y"
+    ):
         save_profile(selected_files, clean, use_keywords, use_format_regex)
 
 
@@ -929,30 +982,25 @@ def main():
     parser.add_argument(
         "--no-redact",
         action="store_true",
-        help="Полностью выключить редактирование секретов (эквивалент двух флагов выше)",
+        help="Полностью выключить редактирование секретов",
     )
     args = parser.parse_args()
-
     global USE_GITIGNORE, GITIGNORE
     if args.no_gitignore:
         USE_GITIGNORE = False
         GITIGNORE = None
-
-    if not HAS_PATHSPEC and USE_GITIGNORE:
+    if not HAS_PATHSPEC and CFG.get("use_gitignore", True) and not args.no_gitignore:
         warn(
-            "пакет 'pathspec' не установлен (pip install pathspec), .gitignore не будет учитываться."
+            "пакет 'pathspec' не установлен (uv add pathspec), .gitignore не будет учитываться."
         )
-
     if args.interactive:
         run_interactive_mode()
     else:
-        use_keywords = not (args.no_redact or args.no_redact_keywords)
-        use_format_regex = not (args.no_redact or args.no_redact_format)
         print("Generating structure...")
         run_full_mode(
             clean=args.clean,
-            use_keywords=use_keywords,
-            use_format_regex=use_format_regex,
+            use_keywords=not (args.no_redact or args.no_redact_keywords),
+            use_format_regex=not (args.no_redact or args.no_redact_format),
         )
 
 

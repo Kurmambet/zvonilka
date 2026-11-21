@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { onBeforeUnmount, ref, shallowRef } from 'vue'
+import { onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
+
 import type { ComponentPublicInstance } from 'vue'
 import type { AudioPeer, AudioSignal } from '../../../shared/audio'
 
@@ -20,6 +21,133 @@ const microphone = ref(false)
 const busy = ref(false)
 let capture: MediaStream | undefined
 let ticket = 0
+
+const microphones = shallowRef<MediaDeviceInfo[]>([])
+const selectedMicrophone = ref('')
+const testing = ref(false)
+const level = ref(0)
+
+let disposed = false
+let deviceRequest = 0
+let testStream: MediaStream | undefined
+let testContext: AudioContext | undefined
+let testFrame = 0
+let testTimer = 0
+
+async function refreshMicrophones(): Promise<void> {
+  const request = ++deviceRequest
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices()
+    if (disposed || request !== deviceRequest) return
+
+    microphones.value = devices.filter(
+      (device) =>
+        device.kind === 'audioinput' &&
+        Boolean(device.deviceId) &&
+        device.deviceId !== 'default' &&
+        device.deviceId !== 'communications'
+    )
+  } catch {
+    // Не сбрасываем выбранный вход при временной ошибке перечисления.
+  }
+}
+
+function openMicrophone(): Promise<MediaStream> {
+  const deviceId = selectedMicrophone.value
+  return navigator.mediaDevices.getUserMedia({
+    audio: deviceId ? { deviceId: { exact: deviceId } } : true
+  })
+}
+
+function microphoneErrorText(error: unknown): string {
+  if (error instanceof DOMException) {
+    if (error.name === 'NotAllowedError') {
+      return 'Нет доступа к микрофону. Проверьте разрешения системы.'
+    }
+    if (error.name === 'NotFoundError' || error.name === 'OverconstrainedError') {
+      return 'Выбранный микрофон недоступен. Выберите другой вход.'
+    }
+    if (error.name === 'NotReadableError') {
+      return 'Не удалось открыть микрофон. Проверьте устройство и другие приложения.'
+    }
+  }
+  return 'Не удалось запустить микрофон.'
+}
+
+function stopMicrophoneTest(): void {
+  window.cancelAnimationFrame(testFrame)
+  window.clearTimeout(testTimer)
+  testStream?.getTracks().forEach((track) => track.stop())
+  testStream = undefined
+
+  const context = testContext
+  testContext = undefined
+  if (context) void context.close().catch(() => {})
+
+  testing.value = false
+  level.value = 0
+}
+
+async function toggleMicrophoneTest(): Promise<void> {
+  if (busy.value || microphone.value || !peers.value.length) return
+  if (testing.value) {
+    stopMicrophoneTest()
+    return
+  }
+
+  const attempt = ++ticket
+  let input: MediaStream | undefined
+  microphoneError.value = ''
+  busy.value = true
+
+  try {
+    // Создаём контекст из обработчика нажатия кнопки.
+    const context = new AudioContext()
+    testContext = context
+
+    input = await openMicrophone()
+    if (attempt !== ticket) return
+    testStream = input
+    void refreshMicrophones()
+
+    const source = context.createMediaStreamSource(input)
+    const analyser = context.createAnalyser()
+    analyser.fftSize = 1024
+    source.connect(analyser)
+    // Не подключаем анализатор к context.destination: звука в колонках нет.
+    const samples = new Float32Array(analyser.fftSize)
+
+    await context.resume()
+    if (attempt !== ticket) return
+    testing.value = true
+
+    function sample(): void {
+      if (attempt !== ticket || !testing.value) return
+      analyser.getFloatTimeDomainData(samples)
+      let sum = 0
+      for (const value of samples) sum += value * value
+      const rms = Math.sqrt(sum / samples.length)
+      level.value = Math.min(100, Math.round(rms * 400))
+      testFrame = window.requestAnimationFrame(sample)
+    }
+
+    testTimer = window.setTimeout(stopMicrophoneTest, 10_000)
+    sample()
+  } catch (error) {
+    if (attempt === ticket) {
+      stopMicrophoneTest()
+      microphoneError.value = microphoneErrorText(error)
+    }
+  } finally {
+    if (input && input !== testStream) input.getTracks().forEach((track) => track.stop())
+    if (attempt === ticket) busy.value = false
+  }
+}
+
+onMounted(() => {
+  navigator.mediaDevices.addEventListener('devicechange', refreshMicrophones)
+  void refreshMicrophones()
+})
 
 function key(peer: AudioPeer): string {
   return `${peer.roomId}:${peer.userId}:${peer.generation}`
@@ -51,6 +179,7 @@ function fail(link: Link): void {
 
 function stopCapture(): void {
   ticket++
+  stopMicrophoneTest()
   capture?.getTracks().forEach((track) => track.stop())
   capture = undefined
   microphone.value = false
@@ -191,7 +320,7 @@ const unsubscribe = window.api.onAudio((event) => {
 })
 
 async function toggleMicrophone(): Promise<void> {
-  if (busy.value || !peers.value.length) return
+  if (busy.value || testing.value || !peers.value.length) return
   microphoneError.value = ''
   busy.value = true
   const attempt = ++ticket
@@ -202,11 +331,12 @@ async function toggleMicrophone(): Promise<void> {
       capture = undefined
       microphone.value = false
     } else {
-      input = await navigator.mediaDevices.getUserMedia({ audio: true })
+      input = await openMicrophone()
       if (attempt !== ticket) return
       if (!input.getAudioTracks().length) throw new Error('Microphone track missing')
       capture = input
       microphone.value = true
+      void refreshMicrophones()
     }
     const track = capture?.getAudioTracks()[0] ?? null
     await Promise.all(
@@ -218,8 +348,8 @@ async function toggleMicrophone(): Promise<void> {
         }
       })
     )
-  } catch {
-    if (attempt === ticket) microphoneError.value = 'Не удалось включить микрофон.'
+  } catch (error) {
+    if (attempt === ticket) microphoneError.value = microphoneErrorText(error)
   } finally {
     if (input && input !== capture) input.getTracks().forEach((track) => track.stop())
     if (attempt === ticket) busy.value = false
@@ -227,6 +357,8 @@ async function toggleMicrophone(): Promise<void> {
 }
 
 onBeforeUnmount(() => {
+  disposed = true
+  navigator.mediaDevices.removeEventListener('devicechange', refreshMicrophones)
   unsubscribe()
   update([])
 })
@@ -234,7 +366,32 @@ onBeforeUnmount(() => {
 
 <template>
   <div v-if="peers.length" class="audio-links">
-    <button type="button" :disabled="busy" @click="toggleMicrophone">
+    <label>
+      Микрофон
+      <select v-model="selectedMicrophone" :disabled="busy || testing || microphone">
+        <option value="">Системный по умолчанию</option>
+        <option
+          v-if="
+            selectedMicrophone && !microphones.some((item) => item.deviceId === selectedMicrophone)
+          "
+          :value="selectedMicrophone"
+          disabled
+        >
+          Выбранный микрофон недоступен
+        </option>
+        <option v-for="(item, index) in microphones" :key="item.deviceId" :value="item.deviceId">
+          {{ item.label || `Микрофон ${index + 1}` }}
+        </option>
+      </select>
+    </label>
+    <button type="button" :disabled="busy || microphone" @click="toggleMicrophoneTest">
+      {{ testing ? 'Остановить проверку' : 'Проверить микрофон' }}
+    </button>
+    <label v-if="testing">
+      Говорите в микрофон:
+      <meter :value="level" min="0" max="100" />
+    </label>
+    <button type="button" :disabled="busy || testing" @click="toggleMicrophone">
       {{ microphone ? 'Выключить микрофон' : 'Включить микрофон' }}
     </button>
     <p v-if="microphoneError" role="alert">{{ microphoneError }}</p>
