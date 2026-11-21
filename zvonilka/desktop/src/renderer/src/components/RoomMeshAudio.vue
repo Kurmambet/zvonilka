@@ -42,6 +42,55 @@ const mutedPeers = ref<Record<string, boolean>>({})
 const testPlaying = ref(false)
 const testVolume = ref(100)
 
+const routeReport = ref('')
+
+async function describeRoute(link: Link): Promise<string> {
+  const { pc } = link
+  const stats = await pc.getStats()
+
+  for (const report of stats.values()) {
+    if (report.type !== 'transport' || !report.selectedCandidatePairId) continue
+
+    const pair = stats.get(report.selectedCandidatePairId)
+    const local = pair ? stats.get(pair.localCandidateId) : undefined
+    const remote = pair ? stats.get(pair.remoteCandidateId) : undefined
+    if (!local?.candidateType || !remote?.candidateType) continue
+
+    const viaTurn = local.candidateType === 'relay' || remote.candidateType === 'relay'
+    const route = viaTurn ? 'через TURN' : 'прямой'
+    const protocol = local.protocol ? ` · ${local.protocol}` : ''
+    const relay = local.relayProtocol ? ` · до TURN: ${local.relayProtocol}` : ''
+
+    return `${route} · ${local.candidateType} → ${remote.candidateType}${protocol}${relay}`
+  }
+
+  return `маршрут пока не определён (ICE: ${pc.iceConnectionState})`
+}
+
+let routeRequest = 0
+
+async function refreshRouteReport(): Promise<void> {
+  const request = ++routeRequest
+  routeReport.value = ''
+
+  const rows = await Promise.all(
+    peers.value.map(async (peer, index) => {
+      const label = peerLabel(peer, index)
+      const link = links.get(key(peer))
+      if (!link) return `${label}: активного аудиосоединения нет`
+
+      try {
+        const route = await describeRoute(link)
+        return current(link) ? `${label}: ${route}` : `${label}: соединение изменилось`
+      } catch {
+        return `${label}: не удалось прочитать статистику`
+      }
+    })
+  )
+
+  if (request === routeRequest) routeReport.value = rows.join('\n')
+}
+
 function togglePeerMute(peer: AudioPeer): void {
   const id = key(peer)
   const player = links.get(id)?.player
@@ -420,6 +469,8 @@ async function receive(link: Link, signal: AudioSignal): Promise<void> {
 }
 
 function update(next: AudioPeer[]): void {
+  routeRequest++
+  routeReport.value = ''
   const keys = new Set(next.map(key))
   for (const link of links.values()) {
     if (!keys.has(key(link.peer))) drop(link)
@@ -584,6 +635,9 @@ onBeforeUnmount(() => {
         <h4>Собеседники</h4>
         <span class="peer-count">{{ peers.length }}</span>
       </div>
+
+      <button type="button" @click="refreshRouteReport">Сетевой отчёт</button>
+      <p v-if="routeReport" class="route-report" role="status">{{ routeReport }}</p>
 
       <div v-for="(peer, index) in peers" :key="key(peer)" class="audio-item">
         <div class="audio-heading">
@@ -783,5 +837,12 @@ onBeforeUnmount(() => {
 .peer-name {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+.route-report {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+  font-size: 0.8125rem;
 }
 </style>
