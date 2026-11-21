@@ -175,7 +175,7 @@ onBeforeUnmount(() => {
     <button v-if="available" type="button" :disabled="requesting" @click="toggleMicrophone">
       {{ microphone ? 'Выключить микрофон' : 'Включить микрофон' }}
     </button>
-    <audio ref="player" v-show="available" controls aria-label="Звук собеседника" />
+    <audio v-show="available" ref="player" controls aria-label="Звук собеседника" />
   </div>
 </template>
 
