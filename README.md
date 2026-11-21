@@ -213,3 +213,16 @@ curl -fsS http://127.0.0.1:8001/health/ready
 npm run typecheck && npm run lint
 npm run dev
 ```
+
+Обновленное применение патчей:
+
+```bash
+PATCH="$HOME/Downloads/zvonilka-three-peer-audio.patch"  # укажи фактический путь
+git apply --check --unidiff-zero "$PATCH"
+
+git apply --unidiff-zero "$PATCH"
+git diff --check
+cd zvonilka/desktop
+npm run typecheck && npm run lint
+npm run dev
+```

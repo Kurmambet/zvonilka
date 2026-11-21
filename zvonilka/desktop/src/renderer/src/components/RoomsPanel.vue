@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import RoomAudio from './RoomAudio.vue'
+import RoomAudio from './RoomMeshAudio.vue'
 import { ref, computed, onBeforeUnmount } from 'vue'
 import type { RoomError, RoomResult, RoomSummary, PresenceState } from '../../../shared/auth'
 

@@ -30,13 +30,14 @@ export function connectPresence(
   let stopped = false
   let cleanupSocket: (() => void) | undefined
   let retriedInitialAuth = false
-  let peer: AudioPeer | null = null
+  let peers = new Map<string, AudioPeer>()
   let transmit: (signal: Record<string, unknown>) => boolean = () => false
 
   function sendAudio(target: unknown, signal: unknown): boolean {
+    if (!isRecord(target) || typeof target.userId !== 'string') return false
+    const peer = peers.get(target.userId)
     if (
       !peer ||
-      !isRecord(target) ||
       target.roomId !== peer.roomId ||
       target.userId !== peer.userId ||
       target.generation !== peer.generation ||
@@ -60,7 +61,8 @@ export function connectPresence(
     if (stopped) return
     stopped = true
     cleanupSocket?.()
-    audio({ peer: null })
+    peers.clear()
+    audio({ peers: [] })
   }
 
   function end(reason: string): void {
@@ -226,40 +228,49 @@ export function connectPresence(
 
         case 'participants': {
           if (!generation || payload.room_id !== roomId || !Array.isArray(payload.members)) return
+          if (!selfId || payload.members.length > 3) {
+            end('protocol_error')
+            return
+          }
           const userIds: string[] = []
+          const next = new Map<string, AudioPeer>()
           for (const member of payload.members) {
-            if (!isRecord(member) || typeof member.user_id !== 'string') {
+            if (
+              !isRecord(member) ||
+              typeof member.user_id !== 'string' ||
+              typeof member.generation !== 'string' ||
+              userIds.includes(member.user_id)
+            ) {
               end('protocol_error')
               return
             }
             userIds.push(member.user_id)
+            if (member.user_id !== selfId) {
+              next.set(member.user_id, {
+                roomId,
+                userId: member.user_id,
+                generation: member.generation,
+                initiator: selfId < member.user_id
+              })
+            } else if (member.generation !== generation) {
+              end('connection_replaced')
+              return
+            }
           }
-          const other = payload.members.find(
-            (member: unknown) => isRecord(member) && member.user_id !== selfId
-          ) as unknown
-          const next =
-            userIds.length === 2 &&
-            selfId &&
-            isRecord(other) &&
-            typeof other.user_id === 'string' &&
-            typeof other.generation === 'string'
-              ? {
-                  roomId,
-                  userId: other.user_id,
-                  generation: other.generation,
-                  initiator: selfId < other.user_id
-                }
-              : null
-          if (peer?.userId !== next?.userId || peer?.generation !== next?.generation) {
-            peer = next
-            audio({ peer })
+          if (!userIds.includes(selfId)) {
+            end('connection_replaced')
+            return
           }
+          peers = next
+          audio({ peers: [...peers.values()] })
           publish({ phase: 'online', roomId, userIds })
           break
         }
 
         case 'offer':
-        case 'answer':
+        case 'answer': {
+          const peer =
+            typeof payload.from_user_id === 'string' ? peers.get(payload.from_user_id) : undefined
           if (
             peer &&
             payload.room_id === roomId &&
@@ -272,6 +283,7 @@ export function connectPresence(
           )
             audio({ peer, signal: { type: payload.type, sdp: payload.sdp } })
           break
+        }
 
         case 'heartbeat_ack':
           if (

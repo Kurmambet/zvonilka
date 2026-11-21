@@ -88,6 +88,7 @@ async function sendDescription(
 }
 
 const unsubscribe = window.api.onAudio((event) => {
+  if ('peers' in event) return
   if (!('signal' in event)) {
     reset()
     peer = event.peer

@@ -5,4 +5,5 @@ export interface AudioPeer {
   generation: string
   initiator: boolean
 }
-export type AudioEvent = { peer: AudioPeer | null } | { peer: AudioPeer; signal: AudioSignal }
+export type AudioEvent =
+  { peer: AudioPeer | null } | { peers: AudioPeer[] } | { peer: AudioPeer; signal: AudioSignal }
