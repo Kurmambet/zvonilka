@@ -55,6 +55,10 @@ function togglePeerMute(peer: AudioPeer): void {
   }
 }
 
+function peerLabel(peer: AudioPeer, index: number): string {
+  return peer.displayName || `Собеседник ${index + 1}`
+}
+
 function setPlayerVolume(player: HTMLAudioElement | null | undefined, event: Event): void {
   const input = event.currentTarget
   if (!player || !(input instanceof HTMLInputElement)) return
@@ -583,7 +587,7 @@ onBeforeUnmount(() => {
 
       <div v-for="(peer, index) in peers" :key="key(peer)" class="audio-item">
         <div class="audio-heading">
-          <p>Собеседник {{ index + 1 }}</p>
+          <p class="peer-name">{{ peerLabel(peer, index) }}</p>
           <p v-if="notes[key(peer)]" class="audio-caption" role="status">
             {{ notes[key(peer)] }}
           </p>
@@ -594,7 +598,7 @@ onBeforeUnmount(() => {
         <div class="audio-controls">
           <button
             type="button"
-            :aria-label="`Заглушить собеседника ${index + 1}`"
+            :aria-label="`Заглушить: ${peerLabel(peer, index)}`"
             :aria-pressed="!!mutedPeers[key(peer)]"
             @click="togglePeerMute(peer)"
           >
@@ -605,7 +609,7 @@ onBeforeUnmount(() => {
             min="0"
             max="100"
             value="100"
-            :aria-label="`Громкость собеседника ${index + 1}`"
+            :aria-label="`Громкость: ${peerLabel(peer, index)}`"
             @input="setPlayerVolume(links.get(key(peer))?.player, $event)"
           />
         </div>
@@ -774,5 +778,10 @@ onBeforeUnmount(() => {
   max-width: 100%;
   min-height: 2rem;
   accent-color: #9cc5ff;
+}
+
+.peer-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 </style>

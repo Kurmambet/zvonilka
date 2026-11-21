@@ -246,11 +246,14 @@ export function connectPresence(
             }
             userIds.push(member.user_id)
             if (member.user_id !== selfId) {
+              const displayName =
+                typeof member.display_name === 'string' ? member.display_name.trim() : ''
               next.set(member.user_id, {
                 roomId,
                 userId: member.user_id,
                 generation: member.generation,
-                initiator: selfId < member.user_id
+                initiator: selfId < member.user_id,
+                ...(displayName && Array.from(displayName).length <= 128 ? { displayName } : {})
               })
             } else if (member.generation !== generation) {
               end('connection_replaced')

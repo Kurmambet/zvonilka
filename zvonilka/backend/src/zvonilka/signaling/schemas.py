@@ -138,6 +138,7 @@ class OnlinePeer(BaseModel):
     model_config = ConfigDict(extra="forbid")
     user_id: UUID
     generation: UUID
+    display_name: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class Participants(Message):

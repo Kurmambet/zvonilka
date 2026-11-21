@@ -42,6 +42,9 @@ class Principal(Protocol):
     @property
     def session_id(self) -> UUID: ...
 
+    @property
+    def display_name(self) -> str: ...
+
 
 class Access(Protocol):
     @property
@@ -150,6 +153,7 @@ class Attempt:
     relay_tokens: float = 0.0
     relay_updated_at: float | None = None
     next_reauth_at: float = 0.0
+    display_name: str | None = None
 
 
 @dataclass(slots=True)
@@ -280,6 +284,7 @@ class SignalingService:
             uuid4(),
             now + self.heartbeat_window,
             window,
+            display_name=access.principal.display_name,
         )
 
     async def join(self, attempt: Attempt, request_id: UUID) -> Joined:
@@ -376,7 +381,7 @@ class SignalingService:
                 now=monotonic(),
             )
         except AuthorizationRejected as exc:
-            raise Rejected(exc.code) from None
+            raise Rejected(exc.code) from None  # type: ignore
         return Reauthenticated(
             version=1,
             type="reauthenticated",

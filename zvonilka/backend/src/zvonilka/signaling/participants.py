@@ -20,11 +20,13 @@ class Subscriber:
         send: Callable[[str], None],
         stop: Callable[[ErrorCode], None],
         ready: Callable[[], bool] | None = None,
+        display_name: str | None = None,
     ):
         self.generation = generation
         self.send = send
         self.stop = stop
         self.ready = ready
+        self.display_name = display_name
 
 
 @dataclass(slots=True)
@@ -59,11 +61,15 @@ class ParticipantsHub:
             epoch=room.epoch,
             sequence=room.sequence + 1,
             members=[
-                OnlinePeer(user_id=user_id, generation=members[user_id].generation)
+                OnlinePeer(
+                    user_id=user_id,
+                    generation=members[user_id].generation,
+                    display_name=members[user_id].display_name,
+                )
                 for user_id in sorted(members, key=str)
             ],
         )
-        payload = snapshot.model_dump_json()
+        payload = snapshot.model_dump_json(exclude_none=True)
         room.members = members
         room.sequence = snapshot.sequence
         for member in members.values():
@@ -81,6 +87,8 @@ class ParticipantsHub:
         stop: Callable[[ErrorCode], None],
         admission: Callable[[], Awaitable[Joined]],
         ready: Callable[[], bool] | None = None,
+        *,
+        display_name: str | None = None,
     ) -> None:
         room = self._rooms.setdefault(room_id, Room())
         room.users += 1
@@ -96,7 +104,7 @@ class ParticipantsHub:
                 # No await here: FIFO gives this socket joined before its first snapshot.
                 send(joined.model_dump_json())
                 members = dict(room.members)
-                members[user_id] = Subscriber(generation, send, stop, ready)
+                members[user_id] = Subscriber(generation, send, stop, ready, display_name)
                 self._commit(room_id, room, members)
         finally:
             room.users -= 1

@@ -110,6 +110,7 @@ async def join_and_publish(
         attempt.connection.stop,
         partial(service.join, attempt, request_id),
         ready=partial(service.can_receive_relay, attempt),
+        display_name=attempt.display_name,
     )
 
 
