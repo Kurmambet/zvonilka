@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
 
 import type { ComponentPublicInstance } from 'vue'
 import type { AudioPeer, AudioSignal } from '../../../shared/audio'
@@ -33,6 +33,65 @@ let testStream: MediaStream | undefined
 let testContext: AudioContext | undefined
 let testFrame = 0
 let testTimer = 0
+
+const testRecordingUrl = ref('')
+const testPlayer = ref<HTMLAudioElement | null>(null)
+let testRecorder: MediaRecorder | undefined
+
+function clearTestRecording(): void {
+  testPlayer.value?.pause()
+  if (testRecordingUrl.value) URL.revokeObjectURL(testRecordingUrl.value)
+  testRecordingUrl.value = ''
+}
+
+function startTestRecording(input: MediaStream, attempt: number): void {
+  const recorder = new MediaRecorder(input)
+  const chunks: Blob[] = []
+  testRecorder = recorder
+
+  recorder.ondataavailable = ({ data }) => {
+    if (data.size > 0) chunks.push(data)
+  }
+
+  recorder.onstop = () => {
+    if (testRecorder !== recorder || attempt !== ticket) return
+    testRecorder = undefined
+    stopMicrophoneTest()
+    busy.value = false
+
+    const recording = new Blob(chunks, { type: recorder.mimeType })
+    if (!recording.size) {
+      microphoneError.value = 'Запись пуста. Запустите проверку ещё раз.'
+      return
+    }
+
+    const url = URL.createObjectURL(recording)
+    testRecordingUrl.value = url
+    void nextTick(() => {
+      if (testRecordingUrl.value !== url) return
+      void testPlayer.value?.play().catch(() => {
+        // Если автовоспроизведение заблокировано, доступны controls.
+      })
+    })
+  }
+
+  recorder.onerror = () => {
+    if (testRecorder !== recorder || attempt !== ticket) return
+    stopMicrophoneTest()
+    busy.value = false
+    microphoneError.value = 'Не удалось записать звук для проверки.'
+  }
+
+  recorder.start()
+}
+
+function finishMicrophoneTest(): void {
+  const recorder = testRecorder
+  if (!recorder || recorder.state === 'inactive') return
+  busy.value = true
+  window.clearTimeout(testTimer)
+  recorder.stop()
+}
 
 async function refreshMicrophones(): Promise<void> {
   const request = ++deviceRequest
@@ -75,6 +134,15 @@ function microphoneErrorText(error: unknown): string {
 }
 
 function stopMicrophoneTest(): void {
+  const recorder = testRecorder
+  testRecorder = undefined
+  if (recorder) {
+    recorder.ondataavailable = null
+    recorder.onstop = null
+    recorder.onerror = null
+    if (recorder.state !== 'inactive') recorder.stop()
+  }
+
   window.cancelAnimationFrame(testFrame)
   window.clearTimeout(testTimer)
   testStream?.getTracks().forEach((track) => track.stop())
@@ -91,9 +159,12 @@ function stopMicrophoneTest(): void {
 async function toggleMicrophoneTest(): Promise<void> {
   if (busy.value || microphone.value || !peers.value.length) return
   if (testing.value) {
-    stopMicrophoneTest()
+    // stopMicrophoneTest()
+    finishMicrophoneTest()
     return
   }
+
+  clearTestRecording()
 
   const attempt = ++ticket
   let input: MediaStream | undefined
@@ -119,6 +190,7 @@ async function toggleMicrophoneTest(): Promise<void> {
 
     await context.resume()
     if (attempt !== ticket) return
+    startTestRecording(input, attempt)
     testing.value = true
 
     function sample(): void {
@@ -131,7 +203,7 @@ async function toggleMicrophoneTest(): Promise<void> {
       testFrame = window.requestAnimationFrame(sample)
     }
 
-    testTimer = window.setTimeout(stopMicrophoneTest, 10_000)
+    testTimer = window.setTimeout(finishMicrophoneTest, 10_000)
     sample()
   } catch (error) {
     if (attempt === ticket) {
@@ -180,6 +252,7 @@ function fail(link: Link): void {
 function stopCapture(): void {
   ticket++
   stopMicrophoneTest()
+  clearTestRecording()
   capture?.getTracks().forEach((track) => track.stop())
   capture = undefined
   microphone.value = false
@@ -321,6 +394,9 @@ const unsubscribe = window.api.onAudio((event) => {
 
 async function toggleMicrophone(): Promise<void> {
   if (busy.value || testing.value || !peers.value.length) return
+
+  testPlayer.value?.pause()
+
   microphoneError.value = ''
   busy.value = true
   const attempt = ++ticket
@@ -385,12 +461,21 @@ onBeforeUnmount(() => {
       </select>
     </label>
     <button type="button" :disabled="busy || microphone" @click="toggleMicrophoneTest">
-      {{ testing ? 'Остановить проверку' : 'Проверить микрофон' }}
+      {{ testing ? 'Остановить и прослушать' : 'Проверить микрофон' }}
     </button>
     <label v-if="testing">
       Говорите в микрофон:
       <meter :value="level" min="0" max="100" />
     </label>
+    <div v-if="testRecordingUrl">
+      <p>Тестовая запись — слышите только вы</p>
+      <audio
+        ref="testPlayer"
+        :src="testRecordingUrl"
+        controls
+        aria-label="Тестовая запись микрофона"
+      />
+    </div>
     <button type="button" :disabled="busy || testing" @click="toggleMicrophone">
       {{ microphone ? 'Выключить микрофон' : 'Включить микрофон' }}
     </button>
