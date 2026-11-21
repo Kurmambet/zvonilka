@@ -24,6 +24,9 @@ export interface DesktopApi {
   register(username: string, displayName: string, password: string): Promise<RegisterResult>
   logout(): Promise<LogoutResult>
   getRoom(roomId: string): Promise<RoomResult<RoomSummary>>
+  connectRoom(roomId: string): Promise<RoomResult<null>>
+  disconnectRoom(): Promise<void>
+  onPresence(listener: (state: PresenceState) => void): () => void
 }
 
 export interface RoomSummary {
@@ -58,3 +61,9 @@ export type RegisterError =
 export type RegisterResult = { ok: true; username: string } | { ok: false; error: RegisterError }
 
 export type LogoutResult = 'revoked' | 'no_local_session' | 'not_confirmed'
+
+export type PresenceState =
+  | { phase: 'idle' }
+  | { phase: 'connecting'; roomId: string }
+  | { phase: 'online'; roomId: string; userIds: string[] }
+  | { phase: 'ended'; roomId: string; reason: string }

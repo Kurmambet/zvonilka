@@ -138,6 +138,9 @@ unset ZVONILKA_DEV_RATE_LIMIT_PREFIX ZVONILKA_DEV_ROOM_REGISTRY_KEY \
 # работа с compose
 
 ```bash
+docker compose --env-file .env.compose.local -f compose.dev.yaml up --build -d
+
+
 dc() { docker compose --env-file .env.compose.local -f compose.dev.yaml "$@"; }
 dc config --quiet
 

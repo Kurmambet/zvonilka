@@ -1,19 +1,15 @@
 import { app, BrowserWindow, ipcMain } from 'electron'
 import { pathToFileURL } from 'node:url'
-import {
-  loginAndLoadProfile,
-  registerAccount,
-  revokeCurrentSession,
-  refreshSession,
-  TokenPair
-} from './auth'
+import { loginAndLoadProfile, registerAccount, revokeCurrentSession, refreshSession } from './auth'
+import type { TokenPair } from './auth'
 import type { LoginResult, RegisterResult, LogoutResult } from '../shared/auth'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import type { IpcMainInvokeEvent, WebContents } from 'electron'
 import { createRoom, issueInvitation, redeemInvitation, closeRoom, getRoom } from './rooms'
-import type { RoomResult } from '../shared/auth'
+import type { RoomResult, PresenceState } from '../shared/auth'
+import { connectPresence } from './presence'
 
 function rendererUrl(): string {
   const devUrl = is.dev ? process.env['ELECTRON_RENDERER_URL'] : undefined
@@ -31,9 +27,52 @@ interface WindowSession {
 const sessions = new WeakMap<WebContents, WindowSession>()
 const loginAttempts = new WeakMap<WebContents, object>()
 
+const presenceByWindow = new WeakMap<WebContents, { stop?: () => void }>()
+
+function stopPresence(sender: WebContents): void {
+  const connection = presenceByWindow.get(sender)
+  presenceByWindow.delete(sender)
+  connection?.stop?.()
+}
+
+function clearSession(sender: WebContents): void {
+  stopPresence(sender)
+  sessions.delete(sender)
+}
+
 function isTrustedRenderer(event: IpcMainInvokeEvent): boolean {
   const frame = event.senderFrame
   return frame !== null && frame === event.sender.mainFrame && frame.url === rendererUrl()
+}
+
+async function refreshForWindow(
+  sender: WebContents,
+  session: WindowSession,
+  previous: TokenPair
+): Promise<RoomResult<string>> {
+  if (sessions.get(sender) !== session) return { ok: false, error: 'unexpected' }
+
+  if (session.tokens !== previous) {
+    return { ok: true, value: session.tokens.accessToken }
+  }
+
+  if (session.refreshUncertain) return { ok: false, error: 'refresh_uncertain' }
+
+  const pending = (session.refreshing ??= refreshSession(previous))
+  const result = await pending
+
+  if (sessions.get(sender) !== session) return { ok: false, error: 'unexpected' }
+
+  if (session.refreshing === pending) {
+    session.refreshing = undefined
+    if (result.ok) session.tokens = result.tokens
+    else if (result.reason === 'uncertain') session.refreshUncertain = true
+  }
+
+  if (result.ok) return { ok: true, value: session.tokens.accessToken }
+  if (result.reason === 'rate_limited') return { ok: false, error: 'rate_limited' }
+  if (result.reason === 'uncertain') return { ok: false, error: 'refresh_uncertain' }
+  return { ok: false, error: 'sign_in_required' }
 }
 
 async function withAccessToken<T>(
@@ -53,31 +92,12 @@ async function withAccessToken<T>(
   if (sessions.get(sender) !== session) return { ok: false, error: 'unexpected' }
   if (first.ok || first.error !== 'sign_in_required') return first
 
-  // Другой запрос мог уже обновить пару, пока этот ждал свой 401.
-  if (session.tokens === initialTokens) {
-    if (session.refreshUncertain) {
-      sessions.delete(sender)
-      return { ok: false, error: 'sign_in_required' }
-    }
+  const refreshed = await refreshForWindow(sender, session, initialTokens)
+  if (sessions.get(sender) !== session) return { ok: false, error: 'unexpected' }
 
-    const pending = (session.refreshing ??= refreshSession(initialTokens))
-    const refreshed = await pending
-
-    if (sessions.get(sender) !== session) return { ok: false, error: 'unexpected' }
-
-    if (session.refreshing === pending) {
-      session.refreshing = undefined
-      if (refreshed.ok) session.tokens = refreshed.tokens
-      else if (refreshed.reason === 'uncertain') session.refreshUncertain = true
-    }
-
-    if (!refreshed.ok) {
-      if (refreshed.reason === 'rate_limited') return { ok: false, error: 'rate_limited' }
-      if (refreshed.reason === 'uncertain') return { ok: false, error: 'refresh_uncertain' }
-
-      sessions.delete(sender)
-      return { ok: false, error: 'sign_in_required' }
-    }
+  if (!refreshed.ok) {
+    if (refreshed.error === 'sign_in_required') clearSession(sender)
+    return refreshed
   }
 
   const retryTokens = session.tokens
@@ -85,7 +105,7 @@ async function withAccessToken<T>(
 
   if (sessions.get(sender) !== session) return { ok: false, error: 'unexpected' }
   if (!retry.ok && retry.error === 'sign_in_required' && session.tokens === retryTokens) {
-    sessions.delete(sender)
+    clearSession(sender)
   }
 
   return retry
@@ -115,6 +135,12 @@ function createWindow(): void {
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   mainWindow.webContents.on('will-navigate', (event) => event.preventDefault())
 
+  const sender = mainWindow.webContents
+  sender.once('destroyed', () => {
+    loginAttempts.delete(sender)
+    clearSession(sender)
+  })
+
   void mainWindow.loadURL(rendererUrl())
   // HMR for renderer base on electron-vite cli.
   // Load the remote URL for development or the local html file for production.
@@ -143,7 +169,7 @@ app.whenReady().then(() => {
       const sender = event.sender
       const attempt = {}
       loginAttempts.set(sender, attempt)
-      sessions.delete(sender)
+      clearSession(sender)
 
       try {
         const result = await loginAndLoadProfile(username, password, (tokens) => {
@@ -196,13 +222,67 @@ app.whenReady().then(() => {
     const sender = event.sender
     const session = sessions.get(sender)
     loginAttempts.delete(sender)
-    sessions.delete(sender)
+    clearSession(sender)
 
     if (!session) return 'no_local_session'
 
     const refreshed = await session.refreshing
     const token = refreshed?.ok ? refreshed.tokens.accessToken : session.tokens.accessToken
     return revokeCurrentSession(token)
+  })
+
+  ipcMain.handle('presence:connect', (event, input: unknown): RoomResult<null> => {
+    if (!isTrustedRenderer(event)) return { ok: false, error: 'unexpected' }
+
+    if (
+      typeof input !== 'string' ||
+      !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(input)
+    ) {
+      return { ok: false, error: 'invalid_request' }
+    }
+
+    const sender = event.sender
+    const session = sessions.get(sender)
+    if (!session) return { ok: false, error: 'sign_in_required' }
+
+    stopPresence(sender)
+    const connection: { stop?: () => void } = {}
+    presenceByWindow.set(sender, connection)
+
+    let socketTokens = session.tokens
+
+    connection.stop = connectPresence(
+      input.toLowerCase(),
+      socketTokens.accessToken,
+      async () => {
+        if (presenceByWindow.get(sender) !== connection) {
+          return { ok: false, error: 'unexpected' }
+        }
+
+        const result = await refreshForWindow(sender, session, socketTokens)
+        if (result.ok) socketTokens = session.tokens
+        return result
+      },
+      (state: PresenceState) => {
+        if (sender.isDestroyed() || presenceByWindow.get(sender) !== connection) return
+        sender.send('presence:state', state)
+
+        if (state.phase === 'ended') {
+          presenceByWindow.delete(sender)
+          if (state.reason === 'sign_in_required' && sessions.get(sender) === session) {
+            clearSession(sender)
+          }
+        }
+      }
+    )
+
+    return { ok: true, value: null }
+  })
+
+  ipcMain.handle('presence:disconnect', (event): void => {
+    if (!isTrustedRenderer(event)) return
+    stopPresence(event.sender)
+    event.sender.send('presence:state', { phase: 'idle' } satisfies PresenceState)
   })
 
   createWindow()

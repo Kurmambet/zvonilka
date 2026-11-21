@@ -137,7 +137,7 @@ async function logout(): Promise<void> {
 </script>
 
 <template>
-  <main class="panel">
+  <main class="panel" :class="{ 'panel--workspace': profile }">
     <h1>Zvonilka</h1>
 
     <section v-if="profile" aria-labelledby="profile-title">
@@ -223,6 +223,10 @@ async function logout(): Promise<void> {
   background: var(--color-background-soft);
   max-height: calc(100vh - 2rem);
   overflow-y: auto;
+}
+
+.panel--workspace {
+  width: min(60rem, calc(100vw - 2rem));
 }
 
 form,

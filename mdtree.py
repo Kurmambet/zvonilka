@@ -523,7 +523,7 @@ def generate_file_contents(root_path=".", clean=False, use_keywords=True, use_fo
 
 def render_redaction_report():
     if not REDACTION_LOG:
-        return "\n\n---\n\n# Отредактированные секреты\n\nНичего не найдено/заменено.\n"
+        return "\n\n---"
     lines = ["\n\n---\n\n# Отредактированные секреты\n"]
     total = 0
     for rel_path, hits in sorted(REDACTION_LOG.items()):
