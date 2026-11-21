@@ -16,7 +16,7 @@ const invitationInput = ref('')
 const pending = ref(false)
 const error = ref('')
 const status = ref('')
-const props = defineProps<{ userId: string }>()
+const props = defineProps<{ userId: string; displayName: string }>()
 const roomIdInput = ref('')
 
 const presence = ref<PresenceState>({ phase: 'idle' })
@@ -310,7 +310,7 @@ function openRoom(): Promise<void> {
         <p v-if="presence.phase === 'connecting'" role="status">Подключаемся…</p>
         <p v-else-if="presence.phase !== 'online'">Нет активного подключения.</p>
 
-        <RoomAudio />
+        <RoomAudio :display-name="props.displayName" />
       </section>
     </div>
 
