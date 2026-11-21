@@ -19,4 +19,5 @@ RUN uv sync --locked --no-dev --no-editable
 WORKDIR /app/zvonilka/backend
 USER 10001:10001
 
-CMD ["python", "-m", "uvicorn", "zvonilka.api:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--timeout-graceful-shutdown", "5"]
+# CMD ["python", "-m", "uvicorn", "zvonilka.api:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--timeout-graceful-shutdown", "5"]
+CMD ["python", "-m", "zvonilka.server", "--host", "0.0.0.0"]

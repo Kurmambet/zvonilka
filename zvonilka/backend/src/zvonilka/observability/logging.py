@@ -21,6 +21,9 @@ EVENTS = {
     "operation_rejected": "Operation rejected",
     "unexpected_error": "Unexpected internal error",
     "background_task_failed": "Background task failed",
+    "ws_joined": "WebSocket room admission completed",
+    "ws_auth_rejected": "WebSocket admission rejected before join",
+    "ws_finished": "WebSocket handler finished",
 }
 CODES = frozenset(
     {
@@ -50,6 +53,27 @@ CODES = frozenset(
         "internal_error",
     }
 )
+WS_CODES = CODES | frozenset(
+    {
+        "unsupported_version",
+        "invalid_message",
+        "message_too_large",
+        "authentication_required",
+        "authentication_timeout",
+        "invalid_access",
+        "rate_limited",
+        "connection_replaced",
+        "session_revoked",
+        "dependency_unavailable",
+        "heartbeat_timeout",
+        "reauthentication_timeout",
+        "server_shutdown",
+        "peer_disconnected",
+        "transport_error",
+        "handler_cancelled",
+        "handler_interrupted",
+    }
+)
 OPERATIONS = frozenset(
     {
         "create",
@@ -62,6 +86,8 @@ OPERATIONS = frozenset(
         "revoke_invite",
         "redeem",
         "sweep",
+        "reauthenticate",
+        "relay",
     }
 )
 DEPENDENCIES = frozenset({"redis", "postgres", "turn"})
@@ -85,34 +111,46 @@ EXCEPTIONS = frozenset(
 def _safe_fields(values: object) -> dict[str, object]:
     if type(values) is not dict:
         return {}
+
     output: dict[str, object] = {}
-    for key, allowed in (("code", CODES), ("operation", OPERATIONS), ("dependency", DEPENDENCIES)):
+    for key, allowed in (
+        ("code", CODES),
+        ("operation", OPERATIONS),
+        ("dependency", DEPENDENCIES),
+        ("ws_code", WS_CODES),
+    ):
         value = values.get(key)
         if type(value) is str and value in allowed:
             output[key] = value
-    value = values.get("request_id")
-    if type(value) is str:
-        try:
-            output["request_id"] = str(UUID(value))
-        except ValueError:
-            pass
-    value = values.get("duration_ms")
 
+    for key in ("request_id", "auth_request_id", "generation"):
+        value = values.get(key)
+        if type(value) is str and (key == "request_id" or len(value) == 36):
+            try:
+                output[key] = str(UUID(value))
+            except ValueError:
+                pass
+
+    for key in ("observed_close_code", "requested_close_code"):
+        close_code: object = values.get(key)
+        if isinstance(close_code, int) and type(close_code) is int and 1000 <= close_code <= 4999:
+            output[key] = close_code
+
+    duration: object = values.get("duration_ms")
     if (
-        isinstance(value, (int, float))
-        and type(value) in (int, float)
-        and 0 <= value <= 86400000
-        and math.isfinite(value)
+        isinstance(duration, (int, float))
+        and type(duration) in (int, float)
+        and 0 <= duration <= 86_400_000
+        and math.isfinite(duration)
     ):
-        output["duration_ms"] = round(value, 3)
+        output["duration_ms"] = round(duration, 3)
 
     return output
 
 
 class SafeJsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
-        # Deliberately never calls getMessage(), repr(exception), formatException,
-        # or formats arbitrary extras, args, stack_info or cached exc_text.
+        # Never format arbitrary messages, extras, exception text or stack text.
         event = getattr(record, "safe_event", None)
         if type(event) is not str or event not in EVENTS:
             event = "unexpected_error" if record.levelno >= logging.ERROR else "external_event"

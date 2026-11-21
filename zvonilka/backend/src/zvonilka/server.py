@@ -1,9 +1,14 @@
+import argparse
 import sys
 
 from zvonilka.observability.logging import configure_logging
 
 
-def main():
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--host", default="127.0.0.1")
+    args = parser.parse_args()
+
     configure_logging()
     try:
         import uvicorn
@@ -13,7 +18,7 @@ def main():
         app = create_app()
         uvicorn.run(
             app,
-            host="127.0.0.1",
+            host=args.host,
             port=8000,
             workers=1,
             ws="websockets",
@@ -24,6 +29,7 @@ def main():
             access_log=False,
             proxy_headers=False,
             server_header=False,
+            timeout_graceful_shutdown=5,
         )
     except KeyboardInterrupt:
         return 0

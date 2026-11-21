@@ -175,6 +175,7 @@ def signaling_router() -> APIRouter:
         if not service.acquire():
             await close_socket(websocket, service.policy.send_timeout, 1013)
             return
+
         connection = service.track()
         attempt: Attempt | None = None
         request_id: UUID | None = None
@@ -183,6 +184,25 @@ def signaling_router() -> APIRouter:
         session_watch: asyncio.Task[None] | None = None
         operation_dependency = "postgres"
         operation = "join"
+
+        started_at = monotonic()
+        auth_request_id: str | None = None
+        generation: str | None = None
+        joined = False
+        ws_code = "handler_interrupted"
+        observed_close_code: int | None = None
+        requested_close_code: int | None = None
+
+        def reject_before_join(code: ErrorCode) -> None:
+            if not joined and auth_request_id is not None:
+                log_event(
+                    logger,
+                    "ws_auth_rejected",
+                    ws_code=code,
+                    auth_request_id=auth_request_id,
+                    generation=generation,
+                )
+
         try:
             async with asyncio.timeout(service.policy.send_timeout):
                 await websocket.accept()
@@ -205,11 +225,13 @@ def signaling_router() -> APIRouter:
                 raise Rejected("authentication_timeout") from None
             message = parse_authentication(raw)
             request_id = message.request_id
+            auth_request_id = str(request_id)
             if message.room_id != target:
                 raise Rejected("invalid_message")
             del raw
             async with asyncio.timeout(service.policy.operation_timeout):
                 attempt = await interrupted(connection, partial(service.identify, message))
+                generation = str(attempt.generation)
                 del message
                 attempt.connection = connection
                 operation_dependency = "redis"
@@ -219,6 +241,14 @@ def signaling_router() -> APIRouter:
                 await interrupted(
                     connection, partial(join_and_publish, service, current, join_request_id, writer)
                 )
+
+            joined = True
+            log_event(
+                logger,
+                "ws_joined",
+                auth_request_id=auth_request_id,
+                generation=generation,
+            )
             session_watch = asyncio.create_task(watch_session(service, current))
             operation = "heartbeat"
             notified = False
@@ -283,36 +313,58 @@ def signaling_router() -> APIRouter:
                         raise Rejected("reauthentication_timeout") from None
                     raise
 
-        except WebSocketDisconnect:
-            pass
+        except WebSocketDisconnect as exc:
+            ws_code = connection.reason or "peer_disconnected"
+            observed_close_code = exc.code
         except Rejected as exc:
+            ws_code = exc.code
+            reject_before_join(exc.code)
             if writer is not None:
                 error_request_id = request_id
                 if connection.reason == exc.code:
                     error_request_id = None
                 send_error(writer, exc.code, error_request_id, exc.close_code)
+                requested_close_code = exc.close_code
         except AuthError as exc:
-            code: ErrorCode = "rate_limited" if exc.code == "rate_limited" else "invalid_access"
+            auth_code: ErrorCode = (
+                "rate_limited" if exc.code == "rate_limited" else "invalid_access"
+            )
+            ws_code = auth_code
+            reject_before_join(auth_code)
             if writer is not None:
-                send_error(writer, code, request_id, 1008)
+                send_error(writer, auth_code, request_id, 1008)
+                requested_close_code = 1008
         except RoomError as exc:
-            code = ROOM_ERRORS.get(exc.code, "internal_error")
-            if code == "dependency_unavailable":
+            room_code = ROOM_ERRORS.get(exc.code, "internal_error")
+            ws_code = room_code
+            reject_before_join(room_code)
+            if room_code == "dependency_unavailable":
                 log_event(
                     logger,
                     "dependency_unavailable",
                     code="schema_mismatch",
                     dependency="redis",
                     operation=operation,
+                    auth_request_id=auth_request_id,
+                    generation=generation,
                 )
-            elif code == "internal_error":
-                log_event(logger, "unexpected_error", code="internal_error", operation=operation)
+            elif room_code == "internal_error":
+                log_event(
+                    logger,
+                    "unexpected_error",
+                    code="internal_error",
+                    operation=operation,
+                    auth_request_id=auth_request_id,
+                    generation=generation,
+                )
             if writer is not None:
-                close_code = 1013 if code == "dependency_unavailable" else 1008
-                if code == "internal_error":
+                close_code = 1013 if room_code == "dependency_unavailable" else 1008
+                if room_code == "internal_error":
                     close_code = 1011
-                send_error(writer, code, request_id, close_code)
+                send_error(writer, room_code, request_id, close_code)
+                requested_close_code = close_code
         except (RedisError, DBAPIError, TimeoutError) as exc:
+            ws_code = "dependency_unavailable"
             dependency = "redis"
             if isinstance(exc, DBAPIError):
                 dependency = "postgres"
@@ -324,15 +376,30 @@ def signaling_router() -> APIRouter:
                 dependency=dependency,
                 code="timeout" if isinstance(exc, TimeoutError) else f"{dependency}_unavailable",
                 operation=operation,
+                auth_request_id=auth_request_id,
+                generation=generation,
             )
             if writer is not None:
                 send_error(writer, "dependency_unavailable", request_id, 1013)
+                requested_close_code = 1013
         except OSError:
-            pass
+            ws_code = connection.reason or "transport_error"
+        except asyncio.CancelledError:
+            ws_code = connection.reason or "handler_cancelled"
+            raise
         except Exception:  # noqa: BLE001 -- WS boundary; never emit raw input or exception text.
-            log_event(logger, "unexpected_error", code="internal_error", operation=operation)
+            ws_code = "internal_error"
+            log_event(
+                logger,
+                "unexpected_error",
+                code="internal_error",
+                operation=operation,
+                auth_request_id=auth_request_id,
+                generation=generation,
+            )
             if writer is not None:
                 send_error(writer, "internal_error", request_id, 1011)
+                requested_close_code = 1011
         finally:
             try:
                 with anyio.CancelScope(shield=True):
@@ -349,10 +416,21 @@ def signaling_router() -> APIRouter:
                             if writer is not None:
                                 await writer.aclose()
                             elif accepted:
+                                requested_close_code = 1000
                                 await close_socket(websocket, service.policy.send_timeout, 1000)
                         finally:
                             await cleanup(service, attempt)
             finally:
                 service.release(connection)
+                log_event(
+                    logger,
+                    "ws_finished",
+                    ws_code=ws_code,
+                    auth_request_id=auth_request_id,
+                    generation=generation,
+                    observed_close_code=observed_close_code,
+                    requested_close_code=requested_close_code,
+                    duration_ms=(monotonic() - started_at) * 1000,
+                )
 
     return router
