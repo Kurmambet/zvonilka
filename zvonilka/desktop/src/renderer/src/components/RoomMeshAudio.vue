@@ -50,7 +50,14 @@ const diagnosticsAvailable = diagnostics.available
 const diagnosticsText = ref('')
 const diagnosticsStatus = ref('')
 const routeReport = ref('')
-const relayOnly = ref(false)
+type IceMode = 'all' | 'relay'
+
+const selectedIceMode = ref<IceMode>('all')
+const lastIceMode = ref<IceMode | null>(null)
+
+function iceModeLabel(mode: IceMode): string {
+  return mode === 'relay' ? 'Только TURN' : 'Авто'
+}
 let diagnosticTimer = 0
 let copyRequest = 0
 let routeRequest = 0
@@ -107,8 +114,13 @@ async function copyDiagnostics(kind: 'summary' | 'json'): Promise<void> {
 
   const text =
     kind === 'json'
-      ? JSON.stringify({ ...JSON.parse(media), websocket: rows })
+      ? JSON.stringify({
+          ...JSON.parse(media),
+          iceTransportPolicy: lastIceMode.value,
+          websocket: rows
+        })
       : [
+          `Режим ICE: ${lastIceMode.value ? iceModeLabel(lastIceMode.value) : 'нет данных'}`,
           media,
           '',
           'WebSocket:',
@@ -430,7 +442,8 @@ function bindPlayer(peer: AudioPeer, el: Element | ComponentPublicInstance | nul
 }
 
 function createLink(peer: AudioPeer): Link {
-  const policy = relayOnly.value ? 'relay' : 'all'
+  const policy = selectedIceMode.value
+  lastIceMode.value = policy
   const pc = new RTCPeerConnection({ iceTransportPolicy: policy })
   const iceReady = window.api
     .getIceServers()
@@ -818,9 +831,12 @@ onBeforeUnmount(() => {
 
   <details v-if="diagnosticsAvailable || wsDiagnostics.length" class="diagnostics-panel">
     <summary>Диагностика звонка</summary>
-    <label>
-      <input v-model="relayOnly" type="checkbox" :disabled="peers.length > 0" />
-      Только TURN (для следующего подключения)
+    <label class="device-field">
+      <span>Маршрут следующего подключения</span>
+      <select v-model="selectedIceMode" :disabled="peers.length > 0">
+        <option value="all">Авто (рекомендуется)</option>
+        <option value="relay">Только TURN (диагностика)</option>
+      </select>
     </label>
     <div class="audio-controls">
       <button type="button" @click="copyDiagnostics('summary')">Скопировать сводку</button>
