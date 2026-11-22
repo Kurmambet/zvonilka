@@ -9,6 +9,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="ZVONILKA_", env_file=".env", env_file_encoding="utf-8", extra="ignore"
     )
+    environment: Literal["dev", "staging", "production"] = "dev"
+
     database_url: SecretStr
     database_schema: str = "public"
     redis_url: SecretStr = SecretStr("redis://127.0.0.1:6379/0")

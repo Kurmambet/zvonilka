@@ -32,6 +32,7 @@ export interface DesktopApi {
   connectRoom(roomId: string): Promise<RoomResult<null>>
   disconnectRoom(): Promise<void>
   onPresence(listener: (state: PresenceState) => void): () => void
+  probeServer(id: import('./server').ServerProfileId): Promise<import('./server').ServerProbeResult>
 }
 
 export interface RoomSummary {

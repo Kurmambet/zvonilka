@@ -259,3 +259,26 @@ test3
 oioioi_Test-3
 
 ```
+
+найти отчет по поколению
+
+2026-11-22T04:26:22.466Z · ws.open · auth=824ec44a-eed4-487f-a2c8-7d1d0b19da74
+2026-11-22T04:26:22.488Z · ws.joined · auth=824ec44a-eed4-487f-a2c8-7d1d0b19da74 · generation=aa7ae704-a35e-4fd2-8579-1f602228b6fb
+2026-11-22T04:26:37.507Z · ws.heartbeat-ack · auth=824ec44a-eed4-487f-a2c8-7d1d0b19da74 · generation=aa7ae704-a35e-4fd2-8579-1f602228b6fb
+
+```bash
+docker compose --env-file .env.compose.local -f compose.dev.yaml logs --no-color api \
+ | grep -F 'aa7ae704-a35e-4fd2-8579-1f602228b6fb'
+
+
+
+docker compose --env-file .env.compose.local -f compose.dev.yaml exec -T api \
+  python -c 'import os; from zvonilka.config import Settings; print("env:", os.getenv("ZVONILKA_ENVIRONMENT")); print("settings:", Settings().environment)'
+
+# env: None
+# settings: dev
+
+docker compose --env-file .env.compose.local -f compose.dev.yaml exec -T -e ZVONILKA_ENVIRONMENT=staging api \
+  python -c 'import os; from zvonilka.config import Settings; print("env:", os.getenv("ZVONILKA_ENVIRONMENT")); print("settings:", Settings().environment)'
+
+```

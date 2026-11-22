@@ -104,7 +104,11 @@ def create_app(settings: Settings | None = None):
                 presence_ttl=settings.room_presence_ttl_seconds,
             )
             started = True
-            log_event(logging.getLogger("zvonilka.api"), "service_started")
+            log_event(
+                logging.getLogger("zvonilka.api"),
+                "service_started",
+                environment=settings.environment,
+            )
             yield
         finally:
             try:

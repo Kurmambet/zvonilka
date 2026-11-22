@@ -22,6 +22,9 @@ const api: DesktopApi = {
   login: (username, password) =>
     ipcRenderer.invoke('auth:login', username, password) as Promise<LoginResult>,
 
+  probeServer: (id) =>
+    ipcRenderer.invoke('server:probe', id) as ReturnType<DesktopApi['probeServer']>,
+
   createRoom: () => ipcRenderer.invoke('rooms:create') as Promise<RoomResult<RoomSummary>>,
 
   issueInvitation: (roomId) =>

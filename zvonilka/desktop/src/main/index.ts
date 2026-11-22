@@ -10,6 +10,12 @@ import type { IpcMainInvokeEvent, WebContents } from 'electron'
 import { createRoom, issueInvitation, redeemInvitation, closeRoom, getRoom } from './rooms'
 import type { RoomResult, PresenceState } from '../shared/auth'
 import { connectPresence } from './presence'
+import type { ServerProfileId, ServerProbeResult } from '../shared/server'
+
+const SERVER_URLS: Record<ServerProfileId, string> = {
+  local: 'http://127.0.0.1:8001',
+  staging: 'https://api.zvonilka.website'
+}
 
 function rendererUrl(): string {
   const devUrl = is.dev ? process.env['ELECTRON_RENDERER_URL'] : undefined
@@ -185,6 +191,38 @@ app.whenReady().then(() => {
       }
     }
   )
+
+  ipcMain.handle('server:probe', async (event, id: unknown): Promise<ServerProbeResult> => {
+    if (!isTrustedRenderer(event) || (id !== 'local' && id !== 'staging')) {
+      return { ok: false }
+    }
+
+    const started = performance.now()
+
+    try {
+      const response = await fetch(new URL('/health/live', SERVER_URLS[id]), {
+        cache: 'no-store',
+        redirect: 'error',
+        signal: AbortSignal.timeout(3000)
+      })
+
+      if (!response.ok) return { ok: false }
+
+      const body: unknown = await response.json()
+      if (
+        typeof body !== 'object' ||
+        body === null ||
+        !('status' in body) ||
+        body.status !== 'ok'
+      ) {
+        return { ok: false }
+      }
+
+      return { ok: true, latencyMs: Math.round(performance.now() - started) }
+    } catch {
+      return { ok: false }
+    }
+  })
 
   ipcMain.handle('rooms:create', (event) => withAccessToken(event, createRoom))
 

@@ -35,3 +35,31 @@
 | icecandidateerror: код, текст и адрес настроенного STUN/TURN без учётных данных                                        | Показывает, какой endpoint не сработал. Код 701 сам по себе не доказывает блокировку: ошибка у одного сервера может сосуществовать с рабочим маршрутом через другой. На текущем стенде с iceServers: [] отсутствие таких ошибок ничего не говорит о доступности STUN/TURN. |
 | Аудио каждые 2 секунды: прирост входящих и исходящих RTP-пакетов и байтов, входящие потери, jitter, RTT выбранной пары | Показывает, шёл ли поток по каждому соединению и что происходило перед обрывом. Пропущенное поле отмечаем как «нет данных», а не как ноль. Потери за интервал считаем по разнице счётчиков одного потока, не сравниваем счётчики до и после его замены.                    |
 | Состояние микрофона, дорожки и локального плеера; этап и имя ошибки WebRTC                                             | Позволяет отличить проблему маршрута от неоткрывшегося входа, ошибки replaceTrack или заглушённого плеера. Рост RTP-счётчиков подтверждает передачу пакетов, но не доказывает, что на микрофоне был слышен голос.                                                          |
+
+# Развести dev и staging
+
+| Настройка       | Локально                   | На VPS                                                    |
+| --------------- | -------------------------- | --------------------------------------------------------- |
+| DEBUG           | true                       | false                                                     |
+| Compose         | Текущий compose.dev.yaml   | Отдельный compose.staging.yaml                            |
+| Файл окружения  | Текущий .env.compose.local | Отдельный .env.compose.staging на сервере                 |
+| API и сигналинг | Как сейчас                 | https://api.zvonilka.website и wss://api.zvonilka.website |
+| ICE-серверы     | Текущая конфигурация       | turn.zvonilka.website для STUN и TURN                     |
+
+# coturn и выдача ICE-конфигурации
+
+| Назначение  | URL                                            |
+| ----------- | ---------------------------------------------- |
+| STUN        | stun:turn.zvonilka.website:3478                |
+| TURN по UDP | turn:turn.zvonilka.website:3478?transport=udp  |
+| TURN по TCP | turn:turn.zvonilka.website:3478?transport=tcp  |
+| TURN по TLS | turns:turn.zvonilka.website:5349?transport=tcp |
+
+# Авто / TURN UDP / TURN TCP
+
+| Пункт в UI                                      | Что получает RTCPeerConnection                                                             |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| Авто — по умолчанию                             | iceTransportPolicy: 'all', настроенные STUN и TURN URL. Возможен прямой маршрут или relay. |
+| TURN UDP                                        | iceTransportPolicy: 'relay', только turn:turn.zvonilka.website:3478?transport=udp.         |
+| TURN TCP                                        | iceTransportPolicy: 'relay', только turn:turn.zvonilka.website:3478?transport=tcp.         |
+| TURN TLS — сначала можно оставить в диагностике | iceTransportPolicy: 'relay', только turns:turn.zvonilka.website:5349?transport=tcp.        |

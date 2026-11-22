@@ -2,6 +2,11 @@
 import { ref } from 'vue'
 import type { LoginError, Profile, RegisterError } from '../../shared/auth'
 import RoomsPanel from './components/RoomsPanel.vue'
+import type { ServerProfileId, ServerProbeResult } from '../../shared/server'
+
+const probeProfile = ref<ServerProfileId>('local')
+const probePending = ref(false)
+const probeResult = ref<ServerProbeResult | null>(null)
 
 const username = ref('')
 const password = ref('')
@@ -29,6 +34,22 @@ const messages: Record<LoginError, string> = {
   api_unavailable: 'API недоступен. Проверьте, что backend запущен, и попробуйте снова.',
   profile_failed: 'Не удалось получить профиль после входа. Попробуйте войти снова.',
   unexpected: 'Не удалось выполнить вход. Попробуйте снова.'
+}
+
+async function checkServer(id: ServerProfileId): Promise<void> {
+  if (probePending.value) return
+
+  probeProfile.value = id
+  probePending.value = true
+  probeResult.value = null
+
+  try {
+    probeResult.value = await window.api.probeServer(id)
+  } catch {
+    probeResult.value = { ok: false }
+  } finally {
+    probePending.value = false
+  }
 }
 
 function requireSignIn(): void {
@@ -138,11 +159,46 @@ async function logout(): Promise<void> {
 
 <template>
   <main class="panel" :class="{ 'panel--workspace': profile }">
-    <h1>Zvonilka</h1>
+    <header class="panel-topbar">
+      <h1>Zvonilka</h1>
+
+      <section class="server-probe" aria-label="Проверка доступности API">
+        <div class="server-probe__buttons">
+          <button
+            type="button"
+            aria-label="Проверить Local"
+            :disabled="probePending"
+            @click="checkServer('local')"
+          >
+            Local
+          </button>
+          <button
+            type="button"
+            aria-label="Проверить Staging"
+            :disabled="probePending"
+            @click="checkServer('staging')"
+          >
+            Staging
+          </button>
+        </div>
+
+        <p class="server-probe__status" aria-live="polite">
+          <template v-if="probePending">{{ probeProfile }}: проверяем…</template>
+          <template v-else-if="probeResult?.ok">
+            {{ probeProfile }} · {{ probeProfile === 'staging' ? 'HTTPS' : 'HTTP' }}
+            {{ probeResult.latencyMs }} мс
+          </template>
+          <template v-else-if="probeResult">{{ probeProfile }}: API недоступен</template>
+        </p>
+
+        <p v-if="!profile" class="server-probe__hint">Вход: только Local</p>
+      </section>
+    </header>
 
     <section v-if="profile" aria-labelledby="profile-title">
       <div class="workspace-header">
         <h2 id="profile-title">{{ profile.display_name }}</h2>
+
         <button type="button" :disabled="loggingOut" @click="logout">
           {{ loggingOut ? 'Выход…' : 'Выйти' }}
         </button>
@@ -272,5 +328,48 @@ dd {
   min-width: 0;
   font-size: 1rem;
   overflow-wrap: anywhere;
+}
+
+.panel-topbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.panel-topbar h1 {
+  margin: 0;
+}
+
+.server-probe {
+  flex: 0 0 auto;
+  text-align: right;
+  font-size: 0.75rem;
+  line-height: 1.25;
+}
+
+.server-probe__buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.server-probe__buttons button {
+  width: auto;
+  min-width: 0;
+  min-height: 24px;
+  margin: 0;
+  padding: 2px 7px;
+  font-size: inherit;
+  line-height: 1.25;
+}
+
+.server-probe__status,
+.server-probe__hint {
+  margin: 3px 0 0;
+}
+
+.server-probe__status:empty {
+  margin: 0;
 }
 </style>
