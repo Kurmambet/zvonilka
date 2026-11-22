@@ -362,3 +362,80 @@ dc logs --no-color api | grep -F '38899c6a-a4c6-4a05-a942-4b6fada8a2f8'
 ```
 
 Подтверждены `ws_joined`, heartbeat у обоих клиентов, штатный выход и RTP в обе стороны по прямому `host → host / UDP`. TURN/STUN, звонок из разных сетей и установщик для друга — следующие задачи, не часть выполненного деплоя.
+
+# Coturn test
+
+```bash
+ansible-vault create turn-vault.yml
+vault_zvonilka_turn_secret: "..." - openssl rand -hex 32
+
+
+ansible-playbook -i edge-vps.ini turn-zvonilka.yml --syntax-check
+
+ansible-playbook -i edge-vps.ini turn-zvonilka.yml \
+  --limit swiss-vps --ask-pass --ask-vault-pass \
+  -e @turn-vault.yml
+
+# на сервере
+
+systemctl is-active coturn
+ss -lntup '( sport = :3478 or sport = :5349 )'
+journalctl -u coturn -n 40 --no-pager
+
+docker inspect --format \
+  'VPN: {{.State.Status}}, started={{.State.StartedAt}}, restarts={{.RestartCount}}' \
+  amnezia-awg2
+```
+
+```bash
+sudo apt update
+sudo apt install coturn -y
+
+# на пк
+timeout 10s turnutils_stunclient -p 3478 2.56.119.52
+```
+
+на впс создаем временного юзера coturn
+
+```bash
+python3 - <<'PY'
+import base64
+import hmac
+import time
+from pathlib import Path
+
+prefix = "static-auth-secret="
+secrets = [
+    line.strip()[len(prefix):]
+    for line in Path("/etc/turnserver.conf").read_text().splitlines()
+    if line.strip().startswith(prefix)
+]
+if len(secrets) != 1 or not secrets[0]:
+    raise SystemExit("Ожидался один static-auth-secret в конфиге coturn")
+
+username = f"{int(time.time()) + 600}:zvonilka-smoke"
+password = base64.b64encode(
+    hmac.digest(secrets[0].encode(), username.encode(), "sha1")
+).decode()
+print("Username:", username)
+print("Password:", password)
+PY
+```
+
+local pc
+
+```bash
+read -rp 'TURN username: ' TURN_USER
+read -rsp 'TURN password: ' TURN_PASS
+printf '\n'
+
+# Mint → coturn по UDP
+timeout 20s turnutils_uclient -y -c -n 5 \
+  -u "$TURN_USER" -w "$TURN_PASS" -p 3478 2.56.119.52
+
+# Mint → coturn по TCP; само реле по-прежнему использует UDP
+timeout 20s turnutils_uclient -t -y -c -n 5 \
+  -u "$TURN_USER" -w "$TURN_PASS" -p 3478 2.56.119.52
+
+unset TURN_USER TURN_PASS
+```
