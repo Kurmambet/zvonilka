@@ -1,0 +1,10 @@
+# Apply after compose.staging.yaml; requires Docker Compose v2.
+services:
+  migrate:
+    build: !reset null
+    image: ${ZVONILKA_STAGING_IMAGE:?Set the locally loaded release image}
+    pull_policy: never
+  api:
+    build: !reset null
+    image: ${ZVONILKA_STAGING_IMAGE:?Set the locally loaded release image}
+    pull_policy: never

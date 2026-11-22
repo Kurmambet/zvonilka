@@ -1,0 +1,137 @@
+---
+- name: Publish Zvonilka without managing Docker or VPN
+  hosts: zvonilka_edge
+  become: true
+  vars:
+    edge_domain: api.zvonilka.website
+    edge_webroot: /var/www/zvonilka-acme
+    edge_cert: /etc/letsencrypt/live/api.zvonilka.website
+    edge_vhost: |
+      server {
+        listen 80;
+        server_name {{ edge_domain }};
+        location ^~ /.well-known/acme-challenge/ {
+          root {{ edge_webroot }};
+          try_files $uri =404;
+        }
+        location / {
+      {% if edge_tls %}
+          return 301 https://{{ edge_domain }}$request_uri;
+      {% else %}
+          return 404;
+      {% endif %}
+        }
+      }
+      {% if edge_tls %}
+      server {
+        listen 443 ssl;
+        server_name {{ edge_domain }};
+        ssl_certificate {{ edge_cert }}/fullchain.pem;
+        ssl_certificate_key {{ edge_cert }}/privkey.pem;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        location = /api/v1/auth/register { return 404; }
+        location = /api/v1/auth/register/ { return 404; }
+        location = /api/v1/rooms { proxy_pass http://127.0.0.1:8002; }
+        location /api/v1/rooms/ {
+          proxy_set_header Host $host;
+          proxy_set_header X-Forwarded-For $remote_addr;
+          proxy_set_header X-Forwarded-Proto $scheme;
+          proxy_set_header Upgrade $http_upgrade;
+          proxy_set_header Connection "upgrade";
+          proxy_read_timeout 120s;
+          access_log off;
+          proxy_pass http://127.0.0.1:8002;
+        }
+        location / { proxy_pass http://127.0.0.1:8002; }
+      }
+      {% endif %}
+  tasks:
+    - name: Check backend readiness
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8002/health/ready
+        use_proxy: false
+    - name: Require email before issuing a certificate
+      ansible.builtin.assert:
+        that: (edge_email | default('')) is match('^[^ @]+@[^ @]+$')
+      when: edge_issue | default(false) | bool
+    - name: Install web edge packages
+      ansible.builtin.apt:
+        name: [nginx, certbot]
+        install_recommends: false
+        update_cache: true
+        cache_valid_time: 3600
+    - name: Create ACME challenge directory
+      ansible.builtin.file:
+        path: "{{ edge_webroot }}/.well-known/acme-challenge"
+        state: directory
+        mode: "0755"
+    - name: Write public ACME probe
+      ansible.builtin.copy:
+        dest: "{{ edge_webroot }}/.well-known/acme-challenge/zvonilka-probe"
+        content: "zvonilka-acme-ok\n"
+        mode: "0644"
+    - name: Check whether a certificate already exists
+      ansible.builtin.stat:
+        path: "{{ edge_cert }}/fullchain.pem"
+        follow: true
+      register: edge_existing
+    - name: Install initial vhost, retaining TLS on subsequent runs
+      ansible.builtin.copy:
+        dest: /etc/nginx/conf.d/zvonilka-edge.conf
+        content: "{{ edge_vhost }}"
+        mode: "0644"
+      vars:
+        edge_tls: "{{ edge_existing.stat.exists }}"
+      notify: Validate and reload nginx
+    - ansible.builtin.meta: flush_handlers
+    - name: Issue certificate after external HTTP verification
+      ansible.builtin.command:
+        argv:
+          [
+            certbot,
+            certonly,
+            --webroot,
+            -w,
+            "{{ edge_webroot }}",
+            --cert-name,
+            "{{ edge_domain }}",
+            -d,
+            "{{ edge_domain }}",
+            --non-interactive,
+            --agree-tos,
+            --email,
+            "{{ edge_email }}",
+            --keep-until-expiring,
+          ]
+        creates: "{{ edge_cert }}/fullchain.pem"
+      when: edge_issue | default(false) | bool
+    - name: Enable TLS after issuance
+      ansible.builtin.copy:
+        dest: /etc/nginx/conf.d/zvonilka-edge.conf
+        content: "{{ edge_vhost }}"
+        mode: "0644"
+      vars:
+        edge_tls: true
+      when: edge_issue | default(false) | bool
+      notify: Validate and reload nginx
+    - name: Reload nginx after successful renewal
+      ansible.builtin.copy:
+        dest: /etc/letsencrypt/renewal-hooks/deploy/zvonilka-nginx
+        mode: "0755"
+        content: |
+          #!/bin/sh
+          /usr/sbin/nginx -t && /usr/bin/systemctl reload nginx
+      when: edge_issue | default(false) | bool
+  handlers:
+    - name: Test nginx configuration
+      listen: Validate and reload nginx
+      ansible.builtin.command: /usr/sbin/nginx -t
+      changed_when: false
+    - name: Reload nginx
+      listen: Validate and reload nginx
+      ansible.builtin.service:
+        name: nginx
+        state: reloaded

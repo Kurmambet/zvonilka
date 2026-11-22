@@ -27,3 +27,4 @@ PROMPT*.md
 mdtree_*.json
 desktop-handoff.md
 reports/
+release.env
