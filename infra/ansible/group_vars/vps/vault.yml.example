@@ -1,0 +1,7 @@
+---
+nginx_basic_auth_user: admin
+nginx_basic_auth_password: "..."
+vault_demo_postgres_password: "..."
+vault_demo_redis_password: "..."
+vault_demo_grafana_password: "..."
+vault_demo_jwt_secret: "..."

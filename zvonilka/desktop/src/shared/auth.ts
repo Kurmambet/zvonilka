@@ -21,12 +21,21 @@ export interface DesktopApi {
     signal: import('./audio').AudioSignal
   ) => Promise<boolean>
   onAudio: (listener: (event: import('./audio').AudioEvent) => void) => () => void
-  login(username: string, password: string): Promise<LoginResult>
+  login(
+    profileId: import('./server').ServerProfileId,
+    username: string,
+    password: string
+  ): Promise<LoginResult>
   createRoom(): Promise<RoomResult<RoomSummary>>
   issueInvitation(roomId: string): Promise<RoomResult<string>>
   redeemInvitation(invitation: string): Promise<RoomResult<RoomSummary>>
   closeRoom(roomId: string): Promise<RoomResult<null>>
-  register(username: string, displayName: string, password: string): Promise<RegisterResult>
+  register(
+    profileId: import('./server').ServerProfileId,
+    username: string,
+    displayName: string,
+    password: string
+  ): Promise<RegisterResult>
   logout(): Promise<LogoutResult>
   getRoom(roomId: string): Promise<RoomResult<RoomSummary>>
   connectRoom(roomId: string): Promise<RoomResult<null>>

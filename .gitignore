@@ -22,6 +22,7 @@ mdtree_config.json
 temp/
 PROMPT*.md
 
+/.env.compose.staging
 /.env.compose.local
 mdtree_*.json
 desktop-handoff.md

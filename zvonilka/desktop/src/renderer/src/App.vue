@@ -4,6 +4,7 @@ import type { LoginError, Profile, RegisterError } from '../../shared/auth'
 import RoomsPanel from './components/RoomsPanel.vue'
 import type { ServerProfileId, ServerProbeResult } from '../../shared/server'
 
+const loginProfile = ref<ServerProfileId>('local')
 const probeProfile = ref<ServerProfileId>('local')
 const probePending = ref(false)
 const probeResult = ref<ServerProbeResult | null>(null)
@@ -65,7 +66,7 @@ async function submit(): Promise<void> {
   notice.value = ''
 
   try {
-    const request = window.api.login(username.value, password.value)
+    const request = window.api.login(loginProfile.value, username.value, password.value)
     password.value = ''
     const result = await request
 
@@ -106,7 +107,12 @@ async function submitRegistration(): Promise<void> {
   pending.value = true
 
   try {
-    const request = window.api.register(username.value, displayName.value, password.value)
+    const request = window.api.register(
+      loginProfile.value,
+      username.value,
+      displayName.value,
+      password.value
+    )
     password.value = ''
     passwordConfirmation.value = ''
 
@@ -190,8 +196,6 @@ async function logout(): Promise<void> {
           </template>
           <template v-else-if="probeResult">{{ probeProfile }}: API недоступен</template>
         </p>
-
-        <p v-if="!profile" class="server-probe__hint">Вход: только Local</p>
       </section>
     </header>
 
@@ -213,6 +217,13 @@ async function logout(): Promise<void> {
 
     <template v-else>
       <form :aria-busy="pending" @submit.prevent="registering ? submitRegistration() : submit()">
+        <label>
+          Сервер
+          <select v-model="loginProfile" :disabled="pending">
+            <option value="local">Local</option>
+            <option value="staging">Staging</option>
+          </select>
+        </label>
         <label>
           Имя пользователя
           <input

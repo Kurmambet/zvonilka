@@ -25,6 +25,7 @@ function rendererUrl(): string {
 }
 
 interface WindowSession {
+  readonly apiBaseUrl: string
   tokens: TokenPair
   refreshing?: ReturnType<typeof refreshSession>
   refreshUncertain?: boolean
@@ -65,7 +66,7 @@ async function refreshForWindow(
 
   if (session.refreshUncertain) return { ok: false, error: 'refresh_uncertain' }
 
-  const pending = (session.refreshing ??= refreshSession(previous))
+  const pending = (session.refreshing ??= refreshSession(session.apiBaseUrl, previous))
   const result = await pending
 
   if (sessions.get(sender) !== session) return { ok: false, error: 'unexpected' }
@@ -84,7 +85,7 @@ async function refreshForWindow(
 
 async function withAccessToken<T>(
   event: IpcMainInvokeEvent,
-  action: (token: string) => Promise<RoomResult<T>>
+  action: (apiBaseUrl: string, token: string) => Promise<RoomResult<T>>
 ): Promise<RoomResult<T>> {
   if (!isTrustedRenderer(event)) return { ok: false, error: 'unexpected' }
 
@@ -93,7 +94,7 @@ async function withAccessToken<T>(
   if (!session) return { ok: false, error: 'sign_in_required' }
 
   const initialTokens = session.tokens
-  const first = await action(initialTokens.accessToken)
+  const first = await action(session.apiBaseUrl, initialTokens.accessToken)
 
   // Не возвращаем результаты старого аккаунта после logout или нового login.
   if (sessions.get(sender) !== session) return { ok: false, error: 'unexpected' }
@@ -108,7 +109,7 @@ async function withAccessToken<T>(
   }
 
   const retryTokens = session.tokens
-  const retry = await action(retryTokens.accessToken)
+  const retry = await action(session.apiBaseUrl, retryTokens.accessToken)
 
   if (sessions.get(sender) !== session) return { ok: false, error: 'unexpected' }
   if (!retry.ok && retry.error === 'sign_in_required' && session.tokens === retryTokens) {
@@ -170,8 +171,18 @@ app.whenReady().then(() => {
   // IPC test
   ipcMain.handle(
     'auth:login',
-    async (event, username: unknown, password: unknown): Promise<LoginResult> => {
+    async (
+      event,
+      profileId: unknown,
+      username: unknown,
+      password: unknown
+    ): Promise<LoginResult> => {
       if (!isTrustedRenderer(event)) return { ok: false, error: 'unexpected' }
+      if (profileId !== 'local' && profileId !== 'staging') {
+        return { ok: false, error: 'invalid_request' }
+      }
+
+      const apiBaseUrl = SERVER_URLS[profileId]
 
       const sender = event.sender
       const attempt = {}
@@ -179,9 +190,9 @@ app.whenReady().then(() => {
       clearSession(sender)
 
       try {
-        const result = await loginAndLoadProfile(username, password, (tokens) => {
+        const result = await loginAndLoadProfile(apiBaseUrl, username, password, (tokens) => {
           if (!sender.isDestroyed() && loginAttempts.get(sender) === attempt) {
-            sessions.set(sender, { tokens })
+            sessions.set(sender, { apiBaseUrl, tokens })
           }
         })
 
@@ -227,31 +238,36 @@ app.whenReady().then(() => {
   ipcMain.handle('rooms:create', (event) => withAccessToken(event, createRoom))
 
   ipcMain.handle('rooms:issue-invitation', (event, roomId: unknown) =>
-    withAccessToken(event, (token) => issueInvitation(token, roomId))
+    withAccessToken(event, (url, token) => issueInvitation(url, token, roomId))
   )
 
   ipcMain.handle('rooms:redeem-invitation', (event, invitation: unknown) =>
-    withAccessToken(event, (token) => redeemInvitation(token, invitation))
+    withAccessToken(event, (url, token) => redeemInvitation(url, token, invitation))
   )
 
   ipcMain.handle('rooms:close', (event, roomId: unknown) =>
-    withAccessToken(event, (token) => closeRoom(token, roomId))
+    withAccessToken(event, (url, token) => closeRoom(url, token, roomId))
   )
 
   ipcMain.handle('rooms:get', (event, roomId: unknown) =>
-    withAccessToken(event, (token) => getRoom(token, roomId))
+    withAccessToken(event, (url, token) => getRoom(url, token, roomId))
   )
 
   ipcMain.handle(
     'auth:register',
     async (
       event,
+      profileId: unknown,
       username: unknown,
       displayName: unknown,
       password: unknown
     ): Promise<RegisterResult> => {
       if (!isTrustedRenderer(event)) return { ok: false, error: 'unexpected' }
-      return registerAccount(username, displayName, password)
+      if (profileId !== 'local' && profileId !== 'staging') {
+        return { ok: false, error: 'invalid_request' }
+      }
+
+      return registerAccount(SERVER_URLS[profileId], username, displayName, password)
     }
   )
 
@@ -267,7 +283,7 @@ app.whenReady().then(() => {
 
     const refreshed = await session.refreshing
     const token = refreshed?.ok ? refreshed.tokens.accessToken : session.tokens.accessToken
-    return revokeCurrentSession(token)
+    return revokeCurrentSession(session.apiBaseUrl, token)
   })
 
   ipcMain.handle('presence:connect', (event, input: unknown): RoomResult<null> => {
@@ -293,6 +309,7 @@ app.whenReady().then(() => {
     Object.assign(
       connection,
       connectPresence(
+        session.apiBaseUrl,
         input.toLowerCase(),
         socketTokens.accessToken,
         async () => {

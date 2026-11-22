@@ -1,6 +1,5 @@
 import type { LoginResult, RegisterResult, LogoutResult } from '../shared/auth'
 
-const API_BASE_URL = 'http://127.0.0.1:8001'
 const REQUEST_TIMEOUT_MS = 5000
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -46,9 +45,12 @@ function parseTokenPair(data: unknown): TokenPair | null {
   }
 }
 
-export async function refreshSession(current: TokenPair): Promise<RefreshResult> {
+export async function refreshSession(
+  apiBaseUrl: string,
+  current: TokenPair
+): Promise<RefreshResult> {
   try {
-    const response = await fetch(`${API_BASE_URL}/api/v1/auth/refresh`, {
+    const response = await fetch(`${apiBaseUrl}/api/v1/auth/refresh`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ refresh_token: current.refreshToken }),
@@ -60,7 +62,6 @@ export async function refreshSession(current: TokenPair): Promise<RefreshResult>
       return { ok: false, reason: 'rejected' }
     }
 
-    // В api.py лимитер срабатывает до вызова AuthService.refresh.
     if (response.status === 429) return { ok: false, reason: 'rate_limited' }
     if (response.status !== 200) return { ok: false, reason: 'uncertain' }
 
@@ -76,6 +77,7 @@ export async function refreshSession(current: TokenPair): Promise<RefreshResult>
 }
 
 export async function loginAndLoadProfile(
+  apiBaseUrl: string,
   username: unknown,
   password: unknown,
 
@@ -95,7 +97,7 @@ export async function loginAndLoadProfile(
   let stage: 'login' | 'profile' = 'login'
 
   try {
-    const login = await fetch(`${API_BASE_URL}/api/v1/auth/login`, {
+    const login = await fetch(`${apiBaseUrl}/api/v1/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password }),
@@ -114,7 +116,7 @@ export async function loginAndLoadProfile(
     if (!tokens) return { ok: false, error: 'unexpected' }
 
     stage = 'profile'
-    const me = await fetch(`${API_BASE_URL}/api/v1/users/me`, {
+    const me = await fetch(`${apiBaseUrl}/api/v1/users/me`, {
       headers: { Authorization: `Bearer ${tokens.accessToken}` },
       redirect: 'error',
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS)
@@ -156,9 +158,10 @@ export async function loginAndLoadProfile(
   }
 }
 
-export { API_BASE_URL, REQUEST_TIMEOUT_MS, isRecord, readJson }
+export { REQUEST_TIMEOUT_MS, isRecord, readJson }
 
 export async function registerAccount(
+  apiBaseUrl: string,
   username: unknown,
   displayName: unknown,
   password: unknown
@@ -178,7 +181,7 @@ export async function registerAccount(
   }
 
   try {
-    const response = await fetch(`${API_BASE_URL}/api/v1/auth/register`, {
+    const response = await fetch(`${apiBaseUrl}/api/v1/auth/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, display_name: displayName, password }),
@@ -210,9 +213,12 @@ export async function registerAccount(
   }
 }
 
-export async function revokeCurrentSession(accessToken: string): Promise<LogoutResult> {
+export async function revokeCurrentSession(
+  apiBaseUrl: string,
+  accessToken: string
+): Promise<LogoutResult> {
   try {
-    const response = await fetch(`${API_BASE_URL}/api/v1/auth/logout`, {
+    const response = await fetch(`${apiBaseUrl}/api/v1/auth/logout`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${accessToken}` },
       redirect: 'error',

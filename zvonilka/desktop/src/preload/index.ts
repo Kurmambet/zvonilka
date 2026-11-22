@@ -19,8 +19,8 @@ const api: DesktopApi = {
       ipcRenderer.removeListener('audio:event', handler)
     }
   },
-  login: (username, password) =>
-    ipcRenderer.invoke('auth:login', username, password) as Promise<LoginResult>,
+  login: (profileId, username, password) =>
+    ipcRenderer.invoke('auth:login', profileId, username, password) as Promise<LoginResult>,
 
   probeServer: (id) =>
     ipcRenderer.invoke('server:probe', id) as ReturnType<DesktopApi['probeServer']>,
@@ -35,8 +35,14 @@ const api: DesktopApi = {
 
   closeRoom: (roomId) => ipcRenderer.invoke('rooms:close', roomId) as Promise<RoomResult<null>>,
 
-  register: (username, displayName, password) =>
-    ipcRenderer.invoke('auth:register', username, displayName, password) as Promise<RegisterResult>,
+  register: (profileId, username, displayName, password) =>
+    ipcRenderer.invoke(
+      'auth:register',
+      profileId,
+      username,
+      displayName,
+      password
+    ) as Promise<RegisterResult>,
 
   logout: () => ipcRenderer.invoke('auth:logout') as Promise<LogoutResult>,
 

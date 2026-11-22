@@ -1,5 +1,5 @@
 import type { RoomError, RoomResult, RoomSummary } from '../shared/auth'
-import { API_BASE_URL, REQUEST_TIMEOUT_MS, isRecord, readJson } from './auth'
+import { REQUEST_TIMEOUT_MS, isRecord, readJson } from './auth'
 
 const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i
 
@@ -67,6 +67,7 @@ async function responseError(response: Response): Promise<RoomError> {
 }
 
 async function requestRoom<T>(
+  apiBaseUrl: string,
   accessToken: string,
   method: 'GET' | 'POST',
   path: string,
@@ -77,7 +78,7 @@ async function requestRoom<T>(
   if (body !== undefined) headers['Content-Type'] = 'application/json'
 
   try {
-    const response = await fetch(`${API_BASE_URL}${path}`, {
+    const response = await fetch(`${apiBaseUrl}${path}`, {
       method: method,
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
@@ -101,11 +102,15 @@ async function requestRoom<T>(
   }
 }
 
-export function createRoom(accessToken: string): Promise<RoomResult<RoomSummary>> {
-  return requestRoom(accessToken, 'POST', '/api/v1/rooms', {}, parseRoom)
+export function createRoom(
+  apiBaseUrl: string,
+  accessToken: string
+): Promise<RoomResult<RoomSummary>> {
+  return requestRoom(apiBaseUrl, accessToken, 'POST', '/api/v1/rooms', {}, parseRoom)
 }
 
 export async function issueInvitation(
+  apiBaseUrl: string,
   accessToken: string,
   roomId: unknown
 ): Promise<RoomResult<string>> {
@@ -113,21 +118,29 @@ export async function issueInvitation(
     return { ok: false, error: 'invalid_request' }
   }
 
-  return requestRoom(accessToken, 'POST', `/api/v1/rooms/${roomId}/invites`, undefined, (data) => {
-    if (
-      !isRecord(data) ||
-      data.room_id !== roomId ||
-      typeof data.invitation !== 'string' ||
-      data.invitation.length !== 84
-    ) {
-      return null
-    }
+  return requestRoom(
+    apiBaseUrl,
+    accessToken,
+    'POST',
+    `/api/v1/rooms/${roomId}/invites`,
+    undefined,
+    (data) => {
+      if (
+        !isRecord(data) ||
+        data.room_id !== roomId ||
+        typeof data.invitation !== 'string' ||
+        data.invitation.length !== 84
+      ) {
+        return null
+      }
 
-    return data.invitation
-  })
+      return data.invitation
+    }
+  )
 }
 
 export async function redeemInvitation(
+  apiBaseUrl: string,
   accessToken: string,
   input: unknown
 ): Promise<RoomResult<RoomSummary>> {
@@ -138,16 +151,27 @@ export async function redeemInvitation(
   const invitation = input.trim()
   if (invitation.length !== 84) return { ok: false, error: 'invalid_request' }
 
-  return requestRoom(accessToken, 'POST', '/api/v1/invites/redeem', { invitation }, parseRoom)
+  return requestRoom(
+    apiBaseUrl,
+    accessToken,
+    'POST',
+    '/api/v1/invites/redeem',
+    { invitation },
+    parseRoom
+  )
 }
 
-export async function closeRoom(accessToken: string, roomId: unknown): Promise<RoomResult<null>> {
+export async function closeRoom(
+  apiBaseUrl: string,
+  accessToken: string,
+  roomId: unknown
+): Promise<RoomResult<null>> {
   if (typeof roomId !== 'string' || !UUID.test(roomId)) {
     return { ok: false, error: 'invalid_request' }
   }
 
   try {
-    const response = await fetch(`${API_BASE_URL}/api/v1/rooms/${roomId}`, {
+    const response = await fetch(`${apiBaseUrl}/api/v1/rooms/${roomId}`, {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${accessToken}` },
       redirect: 'error',
@@ -170,6 +194,7 @@ export async function closeRoom(accessToken: string, roomId: unknown): Promise<R
 }
 
 export async function getRoom(
+  apiBaseUrl: string,
   accessToken: string,
   input: unknown
 ): Promise<RoomResult<RoomSummary>> {
@@ -178,6 +203,7 @@ export async function getRoom(
   }
 
   return requestRoom(
+    apiBaseUrl,
     accessToken,
     'GET',
     `/api/v1/rooms/${input.trim().toLowerCase()}`,

@@ -1,0 +1,77 @@
+name: zvonilka-staging
+
+x-backend: &backend
+  image: zvonilka-backend:staging
+  build:
+    context: .
+    dockerfile: zvonilka/backend/Dockerfile
+  environment:
+    ZVONILKA_ENVIRONMENT: "staging"
+    ZVONILKA_DATABASE_URL: "postgresql+asyncpg://zvonilka:${ZVONILKA_STAGING_DB_PASSWORD:?Set staging DB password}@postgres:5432/zvonilka"
+    ZVONILKA_DATABASE_SCHEMA: "public"
+    ZVONILKA_REDIS_URL: "redis://redis:6379/0"
+    ZVONILKA_JWT_SECRET: "${ZVONILKA_STAGING_JWT_SECRET:?Set staging JWT secret}"
+    ZVONILKA_ROOM_REGISTRY_KEY: "zvonilka:staging:rooms"
+    ZVONILKA_RATE_LIMIT_PREFIX: "zvonilka:staging:rate"
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: zvonilka
+      POSTGRES_PASSWORD: "${ZVONILKA_STAGING_DB_PASSWORD:?Set staging DB password}"
+      POSTGRES_DB: zvonilka
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zvonilka -d zvonilka"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  migrate:
+    <<: *backend
+    command: ["alembic", "-c", "alembic.ini", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *backend
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:8002:8000"
+    stop_grace_period: 15s
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=2).close()",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+volumes:
+  postgres-data: {}
+  redis-data: {}

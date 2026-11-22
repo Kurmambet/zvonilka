@@ -98,8 +98,6 @@ DEFAULT_CONFIG = {
         "dev-dist",
     ],
     "skip_content_dirs": [
-        "alembic/versions",
-        "backend/alembic",
         "node_modules",
         ".vscode",
         "public",
@@ -109,28 +107,14 @@ DEFAULT_CONFIG = {
         ".dockerignore",
         "uv.lock",
         ".gitignore",
-        "alembic.ini",
         "README.md",
         "README",
         "notes.txt",
         "project_structure.md",
         "package-lock.json",
-        "tsconfig.node.json",
-        "tsconfig.json",
-        "tsconfig.app.json",
-        "tree.py",
-        "docker-compose.dev.yml",
-        "seed_messages.py",
-        "generate_secret.py",
+        "mdtree.py",
         "pyproject.toml",
         "__init__.py",
-        "rate_limiter.py",
-        "exceptions.py",
-        "useVideoRecorder.ts",
-        "useVoiceRecorder.ts",
-        "useAuth.ts",
-        "player.ts",
-        "tailwind.config.ts",
     ],
     "include_extensions": [
         ".py",
@@ -149,6 +133,14 @@ DEFAULT_CONFIG = {
         ".dockerignore",
         "Dockerfile",
         ".tsx",
+        ".vue",
+        ".conf",
+        ".tf",
+        ".conf.j2",
+        "env.j2",
+        ".cfg",
+        ".yml.example",
+        ".local.j2",
     ],
     "exclude_extensions": [".woff2", ".png", ".jpg", ".jpeg", ".ico", ".svg", ".lock"],
     "secret_keywords": [
@@ -258,14 +250,10 @@ def is_secret_identifier(identifier):
     return False
 
 
-_LINE_KV_RE = re.compile(
-    r"^([ \t]*)(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\2([ \t]*[:=][ \t]*)(.*)$"
-)
+_LINE_KV_RE = re.compile(r"^([ \t]*)(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\2([ \t]*[:=][ \t]*)(.*)$")
 _QUOTED_VALUE_RE = re.compile(r"^(['\"])(.*)\1(.*)$")
 _BARE_TOKEN_RE = re.compile(r"^(\$\{[^}]*\}|\$\w+|[^\s,;#]+)(.*)$")
-_CODE_REF_RE = re.compile(
-    r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*|\[[^\]\n]*\])+$"
-)
+_CODE_REF_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*|\[[^\]\n]*\])+$")
 
 
 def is_code_reference(token):
@@ -391,18 +379,26 @@ def clean_code(content, filename):
 
 LANG_MAP = {
     ".py": "python",
+    ".conf": "ini",
+    ".env": "dotenv",
+    ".env.example": "dotenv",
+    "env.j2": "jinja2",
+    ".conf.j2": "jinja2",
     ".yml": "yaml",
     ".yaml": "yaml",
     ".toml": "toml",
     ".json": "json",
     ".js": "javascript",
     ".ts": "typescript",
+    ".tsx": "tsx",
     ".vue": "vue",
     ".html": "html",
     ".css": "css",
-    ".md": "markdown",
+    ".dockerignore": "gitignore",
     "Dockerfile": "dockerfile",
-    ".tsx": "tsx",
+    ".tf": "terraform",
+    ".cfg": "conf",
+    ".local.j2": "jinja2",
 }
 
 
@@ -436,10 +432,7 @@ def content_is_skippable(rel_path, filename):
         return True
     # Нормализация нужна для путей из Windows (\) и настроек с /.
     rel = rel_path.replace("\\", "/")
-    return any(
-        rel.startswith(d.replace("\\", "/").rstrip("/") + "/")
-        for d in SKIP_CONTENT_DIRS
-    )
+    return any(rel.startswith(d.replace("\\", "/").rstrip("/") + "/") for d in SKIP_CONTENT_DIRS)
 
 
 def generate_tree(root_path="."):
@@ -472,15 +465,11 @@ def generate_tree(root_path="."):
                 lines.extend(build_tree(os.path.join(current_dir, name), new_prefix))
         return lines
 
-    root_name = (
-        "./" if root_path == "." else f"{os.path.basename(os.path.abspath(root_path))}/"
-    )
+    root_name = "./" if root_path == "." else f"{os.path.basename(os.path.abspath(root_path))}/"
     return "\n".join([root_name] + build_tree(root_path))
 
 
-def generate_file_contents(
-    root_path=".", clean=False, use_keywords=True, use_format_regex=True
-):
+def generate_file_contents(root_path=".", clean=False, use_keywords=True, use_format_regex=True):
     content_lines = []
     for root, dirs, files in os.walk(root_path):
         dirs[:] = [d for d in dirs if not dir_is_excluded(d, os.path.join(root, d))]
@@ -543,9 +532,7 @@ def run_full_mode(clean=False, use_keywords=True, use_format_regex=True):
     size = os.path.getsize(OUTPUT_FILE)
     with open(OUTPUT_FILE, "r", encoding="utf-8") as f:
         full_text = f.read()
-    print(
-        f"SUCCESS! Size: {size / 1024:.2f} KB, tokens ({TOKEN_MODE}): {count_tokens(full_text)}"
-    )
+    print(f"SUCCESS! Size: {size / 1024:.2f} KB, tokens ({TOKEN_MODE}): {count_tokens(full_text)}")
 
 
 class Node:
@@ -700,16 +687,12 @@ def windows_picker(initial_selection=None):
         os.system("cls")
         print("↑/↓ или j/k: выбор | →/Enter: открыть | ←/Backspace: назад")
         print("Пробел: отметить | F: готово | Q: выход")
-        print(
-            f"Файлов: {n_files} | ~токенов: {approx_tokens} | {cursor + 1}/{len(visible)}"
-        )
+        print(f"Файлов: {n_files} | ~токенов: {approx_tokens} | {cursor + 1}/{len(visible)}")
         for idx in range(top, min(top + page, len(visible))):
             node, depth = visible[idx]
             mark = "[x]" if node.selected else "[ ]"
             arrow = ("v " if node.expanded else "> ") if node.is_dir else ""
-            line = (
-                f"{'  ' * depth}{mark} {arrow}{node.name}{'/' if node.is_dir else ''}"
-            )
+            line = f"{'  ' * depth}{mark} {arrow}{node.name}{'/' if node.is_dir else ''}"
             print(("> " if idx == cursor else "  ") + line[: max(1, width - 3)])
         print("-" * min(width, 60))
         ch = msvcrt.getwch()
@@ -809,9 +792,7 @@ def build_sparse_tree(root):
         return any(has_selected_descendant(c) for c in node.children)
 
     def walk(node, prefix=""):
-        relevant = [
-            c for c in node.children if c.selected or has_selected_descendant(c)
-        ]
+        relevant = [c for c in node.children if c.selected or has_selected_descendant(c)]
         for i, c in enumerate(relevant):
             is_last = i == len(relevant) - 1
             lines.append(
@@ -830,9 +811,7 @@ def save_profile(selected_files, clean, use_keywords, use_format_regex):
     name = input("Profile name to save (Enter = skip): ").strip()
     if not name:
         return
-    rel_files = sorted(
-        {os.path.relpath(fp, ".").replace("\\", "/") for fp in selected_files}
-    )
+    rel_files = sorted({os.path.relpath(fp, ".").replace("\\", "/") for fp in selected_files})
     profiles[name] = {
         "files": rel_files,
         "clean": clean,
@@ -898,9 +877,7 @@ def run_interactive_mode():
         mode = input("Content mode: [c]lean or [r]aw? [c/r]: ").strip().lower()
         clean = mode != "r"
         use_keywords = (
-            input("Redact secrets by keyword (SECRET/TOKEN/PASSWORD/...)? [Y/n]: ")
-            .strip()
-            .lower()
+            input("Redact secrets by keyword (SECRET/TOKEN/PASSWORD/...)? [Y/n]: ").strip().lower()
             != "n"
         )
         use_format_regex = (
@@ -957,10 +934,7 @@ def run_interactive_mode():
             "Пропущено (в skip_content_files/skip_content_dirs/недопустимое расширение): "
             + ", ".join(skipped)
         )
-    if (
-        input("Save this file selection as a reusable profile? [y/N]: ").strip().lower()
-        == "y"
-    ):
+    if input("Save this file selection as a reusable profile? [y/N]: ").strip().lower() == "y":
         save_profile(selected_files, clean, use_keywords, use_format_regex)
 
 
@@ -990,9 +964,7 @@ def main():
         USE_GITIGNORE = False
         GITIGNORE = None
     if not HAS_PATHSPEC and CFG.get("use_gitignore", True) and not args.no_gitignore:
-        warn(
-            "пакет 'pathspec' не установлен (uv add pathspec), .gitignore не будет учитываться."
-        )
+        warn("пакет 'pathspec' не установлен (uv add pathspec), .gitignore не будет учитываться.")
     if args.interactive:
         run_interactive_mode()
     else:

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { AudioEvent, AudioPeer, WsDiagnostic } from '../shared/audio'
 import type { PresenceState, RoomResult } from '../shared/auth'
-import { API_BASE_URL, isRecord } from './auth'
+import { isRecord } from './auth'
 
 type Refresh = () => Promise<RoomResult<string>>
 
@@ -18,13 +18,14 @@ const visibleErrors = new Set([
 ])
 
 export function connectPresence(
+  apiBaseUrl: string,
   roomId: string,
   accessToken: string,
   refresh: Refresh,
   publish: (state: PresenceState) => void,
   audio: (event: AudioEvent) => void
 ): { stop: () => void; sendAudio: (target: unknown, signal: unknown) => boolean } {
-  const url = new URL(`/api/v1/rooms/${roomId}/ws`, API_BASE_URL)
+  const url = new URL(`/api/v1/rooms/${roomId}/ws`, apiBaseUrl)
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
 
   let stopped = false
