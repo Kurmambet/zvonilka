@@ -160,3 +160,23 @@ ssh ubuntu@192.168.100.14 \
   'sudo docker ps -a --filter name=zvonilka-staging; sudo docker logs --tail 50 zvonilka-staging-api-1'
 
 ```
+
+```bash
+BASE_URL='https://api.zvonilka.website'
+
+curl --max-time 10 -fsS "$BASE_URL/health/live"
+curl --max-time 10 -fsS "$BASE_URL/health/ready"
+
+curl --max-time 10 -sS -i \
+ -H 'Content-Type: application/json' \
+ --data '{}' \
+ "$BASE_URL/api/v1/rooms"
+
+for path in /api/v1/auth/register /api/v1/auth/register/; do
+curl --max-time 10 -sS -o /dev/null \
+ -w "$path → %{http_code}\n" \
+    -X POST "$BASE_URL$path"
+done
+```
+
+Ожидаем {"status":"ok"}, {"status":"ready"}, затем 401 для создания комнаты без токена и два 404 для регистрации. Не добавляй -k или -L: неправильный сертификат и неожиданный 301 здесь должны быть видны, а не скрыты обходом проверки или следованием редиректу.

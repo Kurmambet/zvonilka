@@ -1,0 +1,7 @@
+---
+all:
+  children:
+    staging_vps:
+      hosts:
+        staging-vps:
+          ansible_host: 203.0.113.10

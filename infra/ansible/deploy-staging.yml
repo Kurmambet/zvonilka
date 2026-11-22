@@ -1,0 +1,90 @@
+---
+- name: Deploy Zvonilka staging from a Git commit
+  hosts: staging_vps
+  become: true
+  vars_files: [vars/zvonilka-vps.yml, vars/vault-staging.yml]
+  tasks:
+    - name: Validate staging secrets
+      ansible.builtin.assert:
+        that:
+          - vault_zvonilka_staging_db_password is match('^[0-9a-f]{64}$')
+          - vault_zvonilka_staging_jwt_secret is match('^[0-9a-f]{64}$')
+          - vault_zvonilka_staging_db_password != vault_zvonilka_staging_jwt_secret
+      no_log: true
+    - name: Resolve release commit
+      ansible.builtin.command:
+        argv: [git, rev-parse, --verify, "{{ zvonilka_revision | default('HEAD') }}^{commit}"]
+        chdir: "{{ playbook_dir }}/../.."
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: release_commit
+    - ansible.builtin.set_fact:
+        release_path: "{{ zvonilka_path }}/releases/{{ release_commit.stdout }}"
+    - ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0750"
+      loop:
+        - "{{ release_path }}"
+        - "{{ zvonilka_path }}/shared"
+    - name: Write staging Compose environment
+      ansible.builtin.copy:
+        dest: "{{ zvonilka_path }}/shared/compose.env"
+        owner: root
+        group: root
+        mode: "0600"
+        content: |
+          ZVONILKA_STAGING_DB_PASSWORD={{ vault_zvonilka_staging_db_password }}
+          ZVONILKA_STAGING_JWT_SECRET={{ vault_zvonilka_staging_jwt_secret }}
+      no_log: true
+    - block:
+        - ansible.builtin.tempfile:
+            state: file
+            suffix: .tar
+          delegate_to: localhost
+          become: false
+          register: release_archive
+        - ansible.builtin.command:
+            argv:
+              - git
+              - archive
+              - --format=tar
+              - "--output={{ release_archive.path }}"
+              - "{{ release_commit.stdout }}"
+              - compose.staging.yaml
+              - .dockerignore
+              - pyproject.toml
+              - uv.lock
+              - zvonilka/backend/Dockerfile
+              - zvonilka/backend/src
+              - zvonilka/backend/alembic.ini
+              - zvonilka/backend/migrations
+            chdir: "{{ playbook_dir }}/../.."
+          delegate_to: localhost
+          become: false
+        - ansible.builtin.unarchive:
+            src: "{{ release_archive.path }}"
+            dest: "{{ release_path }}"
+      always:
+        - ansible.builtin.file:
+            path: "{{ release_archive.path }}"
+            state: absent
+          delegate_to: localhost
+          become: false
+          when: release_archive.path is defined
+    - name: Build and start Compose stack
+      ansible.builtin.command:
+        argv: [docker, compose, --env-file, "{{ zvonilka_path }}/shared/compose.env", -f, compose.staging.yaml, up, -d, --build]
+        chdir: "{{ release_path }}"
+      no_log: true
+    - name: Wait for local API readiness
+      ansible.builtin.uri:
+        url: http://127.0.0.1:8002/health/ready
+        use_proxy: false
+      register: ready
+      until: ready.status == 200
+      retries: 30
+      delay: 2

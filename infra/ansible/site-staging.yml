@@ -1,0 +1,17 @@
+---
+- name: Configure public staging infrastructure
+  hosts: staging_vps
+  become: true
+  vars_files: [vars/zvonilka-vps.yml]
+  pre_tasks:
+    - ansible.builtin.assert:
+        that:
+          - certbot_email | length > 0
+          - ansible_facts['env']['SUDO_USER'] | default('') == admin_user
+  roles:
+    - base
+    - firewall
+    - fail2ban
+    - docker
+    - nginx
+    - ssh_hardening

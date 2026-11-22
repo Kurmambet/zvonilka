@@ -1,0 +1,3 @@
+---
+vault_zvonilka_staging_db_password: REPLACE_WITH_64_HEX_CHARACTERS
+vault_zvonilka_staging_jwt_secret: REPLACE_WITH_DIFFERENT_64_HEX_CHARACTERS

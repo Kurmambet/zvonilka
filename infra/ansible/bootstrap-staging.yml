@@ -1,0 +1,26 @@
+---
+- name: Bootstrap staging administrator
+  hosts: staging_vps
+  become: true
+  gather_facts: false
+  vars_files: [vars/zvonilka-vps.yml]
+  tasks:
+    - ansible.builtin.assert:
+        that: admin_ssh_public_keys | length > 0
+    - ansible.builtin.user:
+        name: "{{ admin_user }}"
+        shell: /bin/bash
+        groups: sudo
+        append: true
+        create_home: true
+    - ansible.posix.authorized_key:
+        user: "{{ admin_user }}"
+        key: "{{ item }}"
+      loop: "{{ admin_ssh_public_keys }}"
+    - ansible.builtin.copy:
+        dest: "/etc/sudoers.d/90-{{ admin_user }}"
+        content: "{{ admin_user }} ALL=(ALL) NOPASSWD:ALL\n"
+        owner: root
+        group: root
+        mode: "0440"
+        validate: /usr/sbin/visudo -cf %s
