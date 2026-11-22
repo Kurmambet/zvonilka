@@ -10,6 +10,7 @@ const props = defineProps<{ displayName?: string }>()
 type Link = {
   peer: AudioPeer
   pc: RTCPeerConnection
+  iceReady: Promise<boolean>
   sender?: RTCRtpSender
   remote?: MediaStream
   player?: HTMLAudioElement
@@ -49,6 +50,7 @@ const diagnosticsAvailable = diagnostics.available
 const diagnosticsText = ref('')
 const diagnosticsStatus = ref('')
 const routeReport = ref('')
+const relayOnly = ref(false)
 let diagnosticTimer = 0
 let copyRequest = 0
 let routeRequest = 0
@@ -428,8 +430,24 @@ function bindPlayer(peer: AudioPeer, el: Element | ComponentPublicInstance | nul
 }
 
 function createLink(peer: AudioPeer): Link {
-  const pc = new RTCPeerConnection({ iceServers: [] })
-  const link: Link = { peer, pc, diagnostic: diagnostics.createLink(peer.displayName) }
+  const policy = relayOnly.value ? 'relay' : 'all'
+  const pc = new RTCPeerConnection({ iceTransportPolicy: policy })
+  const iceReady = window.api
+    .getIceServers()
+    .then((result) => {
+      if (pc.signalingState === 'closed') return false
+      if (!result.ok) return policy === 'all'
+      if (
+        policy === 'relay' &&
+        !result.value.some((item) => item.urls.some((url) => /^turns?:/.test(url)))
+      ) {
+        return false
+      }
+      pc.setConfiguration({ iceServers: result.value, iceTransportPolicy: policy })
+      return true
+    })
+    .catch(() => policy === 'all')
+  const link: Link = { peer, pc, iceReady, diagnostic: diagnostics.createLink(peer.displayName) }
   links.set(key(peer), link)
 
   diagnostics.record('peer.created', link, {
@@ -503,7 +521,17 @@ async function attach(link: Link, transceiver: RTCRtpTransceiver): Promise<void>
   if (track) await link.sender.replaceTrack(track)
 }
 
+async function waitForIce(link: Link): Promise<boolean> {
+  const ready = await link.iceReady
+  if (!current(link)) return false
+  if (ready) return true
+  drop(link)
+  setNote(link, 'Режим «Только TURN»: сервер не выдал настройки реле.')
+  return false
+}
+
 async function offer(link: Link): Promise<void> {
+  if (!(await waitForIce(link))) return
   const { pc } = link
   await attach(link, pc.addTransceiver('audio', { direction: 'sendrecv' }))
   if (!current(link)) return
@@ -512,6 +540,7 @@ async function offer(link: Link): Promise<void> {
 }
 
 async function receive(link: Link, signal: AudioSignal): Promise<void> {
+  if (!(await waitForIce(link))) return
   const { pc } = link
   if (signal.type === 'answer') {
     if (pc.signalingState === 'have-local-offer') await pc.setRemoteDescription(signal)
@@ -770,6 +799,10 @@ onBeforeUnmount(() => {
 
   <details v-if="diagnosticsAvailable || wsDiagnostics.length" class="diagnostics-panel">
     <summary>Диагностика звонка</summary>
+    <label>
+      <input v-model="relayOnly" type="checkbox" :disabled="peers.length > 0" />
+      Только TURN (для следующего подключения)
+    </label>
     <div class="audio-controls">
       <button type="button" @click="copyDiagnostics('summary')">Скопировать сводку</button>
       <button type="button" @click="copyDiagnostics('json')">Скопировать JSON</button>

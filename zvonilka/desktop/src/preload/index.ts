@@ -10,7 +10,10 @@ import type {
 } from '../shared/auth'
 import type { AudioEvent } from '../shared/audio'
 
-const api: DesktopApi = {
+type IceResult = Awaited<ReturnType<typeof import('../main/rooms').getIceServers>>
+
+const api: DesktopApi & { getIceServers: () => Promise<IceResult> } = {
+  getIceServers: () => ipcRenderer.invoke('ice:get') as Promise<IceResult>,
   sendAudio: (peer, signal) => ipcRenderer.invoke('audio:send', peer, signal) as Promise<boolean>,
   onAudio: (listener) => {
     const handler = (_event: Electron.IpcRendererEvent, value: AudioEvent): void => listener(value)

@@ -7,7 +7,14 @@ import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import type { IpcMainInvokeEvent, WebContents } from 'electron'
-import { createRoom, issueInvitation, redeemInvitation, closeRoom, getRoom } from './rooms'
+import {
+  createRoom,
+  issueInvitation,
+  redeemInvitation,
+  closeRoom,
+  getRoom,
+  getIceServers
+} from './rooms'
 import type { RoomResult, PresenceState } from '../shared/auth'
 import { connectPresence } from './presence'
 import type { ServerProfileId, ServerProbeResult } from '../shared/server'
@@ -234,6 +241,8 @@ app.whenReady().then(() => {
       return { ok: false }
     }
   })
+
+  ipcMain.handle('ice:get', (event) => withAccessToken(event, getIceServers))
 
   ipcMain.handle('rooms:create', (event) => withAccessToken(event, createRoom))
 

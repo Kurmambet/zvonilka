@@ -102,6 +102,33 @@ async function requestRoom<T>(
   }
 }
 
+export type IceServer = { urls: string[]; username?: string; credential?: string }
+
+export function getIceServers(
+  apiBaseUrl: string,
+  accessToken: string
+): Promise<RoomResult<IceServer[]>> {
+  return requestRoom(apiBaseUrl, accessToken, 'GET', '/api/v1/ice-servers', undefined, (data) => {
+    if (!isRecord(data) || !Array.isArray(data.iceServers)) return null
+    const result: IceServer[] = []
+    for (const item of data.iceServers as unknown[]) {
+      if (!isRecord(item) || !Array.isArray(item.urls) || item.urls.length === 0) return null
+      const urls: string[] = []
+      for (const url of item.urls as unknown[]) {
+        if (typeof url !== 'string' || !/^(stun|turn|turns):/.test(url)) return null
+        urls.push(url)
+      }
+      if (urls.some((url) => /^turns?:/.test(url))) {
+        if (typeof item.username !== 'string' || typeof item.credential !== 'string') return null
+        result.push({ urls, username: item.username, credential: item.credential })
+      } else {
+        result.push({ urls })
+      }
+    }
+    return result
+  })
+}
+
 export function createRoom(
   apiBaseUrl: string,
   accessToken: string

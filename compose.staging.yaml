@@ -13,6 +13,8 @@ x-backend: &backend
     ZVONILKA_JWT_SECRET: "${ZVONILKA_STAGING_JWT_SECRET:?Set staging JWT secret}"
     ZVONILKA_ROOM_REGISTRY_KEY: "zvonilka:staging:rooms"
     ZVONILKA_RATE_LIMIT_PREFIX: "zvonilka:staging:rate"
+    ZVONILKA_TURN_HOST: "${ZVONILKA_TURN_HOST:-}"
+    ZVONILKA_TURN_SECRET: "${ZVONILKA_TURN_SECRET:-}"
 
 services:
   postgres:

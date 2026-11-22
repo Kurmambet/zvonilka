@@ -1,4 +1,9 @@
+import base64
+import hashlib
+import hmac
 import logging
+import os
+import time
 from contextlib import asynccontextmanager
 from uuid import UUID
 
@@ -265,6 +270,30 @@ def create_app(settings: Settings | None = None):
             user, body.current_password.get_secret_value(), body.new_password.get_secret_value()
         )
         return Response(status_code=204)
+
+    @app.get("/api/v1/ice-servers")
+    async def ice_servers(
+        request: Request, response: Response, user: Principal = Depends(principal)
+    ):
+        response.headers["Cache-Control"] = "no-store"
+        secret = os.environ.get("ZVONILKA_TURN_SECRET")
+        host = os.environ.get("ZVONILKA_TURN_HOST")
+        if not secret or not host:
+            return {"iceServers": []}
+        await rate(request, "ice_user", 30, 60, str(user.user_id))
+        username = f"{int(time.time()) + 3600}:{user.user_id}"
+        digest = hmac.new(secret.encode(), username.encode(), hashlib.sha1).digest()
+        credential = base64.b64encode(digest).decode("ascii")
+        return {
+            "iceServers": [
+                {"urls": [f"stun:{host}:3478"]},
+                {
+                    "urls": [f"turn:{host}:3478?transport={p}" for p in ("udp", "tcp")],
+                    "username": username,
+                    "credential": credential,
+                },
+            ]
+        }
 
     app.include_router(room_router(principal, rate))
     app.include_router(signaling_router())
