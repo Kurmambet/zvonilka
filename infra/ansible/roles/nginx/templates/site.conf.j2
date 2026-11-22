@@ -7,6 +7,10 @@
 {% macro locations(site) %}
 {% for loc in site.locations | default([]) %}
     location {{ loc.path }} {
+{% if loc.return_status is defined %}
+        return {{ loc.return_status }};
+    }
+{% else %}
 {% if loc.rate_limit | default(false) %}
         limit_req zone=perip burst={{ loc.burst | default(40) }} nodelay;
         limit_req_status 429;
@@ -33,6 +37,7 @@
         proxy_read_timeout {{ loc.timeout | default('60s') }};
     }
 
+{% endif %}
 {% endfor %}
 {% endmacro %}
 server {

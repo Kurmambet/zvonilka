@@ -288,3 +288,5 @@ docker compose --env-file .env.compose.local -f compose.dev.yaml exec -T api \
 
 docker compose --env-file .env.compose.staging -f compose.staging.yaml -T api \
  python -c 'import os; from zvonilka.config import Settings; print("env:", os.getenv("ZVONILKA_ENVIRONMENT")); print("settings:", Settings().environment)'
+
+docker compose --env-file .env.compose.staging -f compose.staging.yaml down

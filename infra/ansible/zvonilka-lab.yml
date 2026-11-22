@@ -1,0 +1,119 @@
+---
+- name: Configure and deploy Zvonilka on the libvirt lab
+  hosts: lab-vm
+  become: true
+  vars_files:
+    - vars/zvonilka-lab.yml
+  pre_tasks:
+    - name: Validate lab secrets without logging them
+      ansible.builtin.assert:
+        that:
+          - vault_zvonilka_lab_db_password is match('^[0-9a-f]{64}$')
+          - vault_zvonilka_lab_jwt_secret is match('^[0-9a-f]{64}$')
+          - vault_zvonilka_lab_db_password != vault_zvonilka_lab_jwt_secret
+      no_log: true
+  roles:
+    - base
+    - firewall
+    - fail2ban
+    - docker
+    - nginx
+    - app
+  tasks:
+    - name: Resolve the selected Git revision on the controller
+      ansible.builtin.command:
+        argv: [git, rev-parse, --verify, "{{ zvonilka_revision | default('HEAD') }}^{commit}"]
+        chdir: "{{ playbook_dir }}/../.."
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      register: zvonilka_commit
+
+    - name: Set the remote release directory
+      ansible.builtin.set_fact:
+        zvonilka_release: "{{ zvonilka_path }}/releases/{{ zvonilka_commit.stdout }}"
+
+    - name: Create the release directory
+      ansible.builtin.file:
+        path: "{{ zvonilka_release }}"
+        state: directory
+        mode: "0750"
+
+    - name: Transfer tracked source files only
+      block:
+        - name: Allocate temporary archive on the controller
+          ansible.builtin.tempfile:
+            state: file
+            suffix: .tar
+          delegate_to: localhost
+          become: false
+          register: zvonilka_archive
+
+        - name: Archive the selected commit
+          ansible.builtin.command:
+            argv:
+              - git
+              - archive
+              - --format=tar
+              - "--output={{ zvonilka_archive.path }}"
+              - "{{ zvonilka_commit.stdout }}"
+              - compose.staging.yaml
+              - .dockerignore
+              - pyproject.toml
+              - uv.lock
+              - zvonilka/backend/Dockerfile
+              - zvonilka/backend/src
+              - zvonilka/backend/alembic.ini
+              - zvonilka/backend/migrations
+            chdir: "{{ playbook_dir }}/../.."
+          delegate_to: localhost
+          become: false
+
+        - name: Extract release on the VM
+          ansible.builtin.unarchive:
+            src: "{{ zvonilka_archive.path }}"
+            dest: "{{ zvonilka_release }}"
+      always:
+        - name: Delete temporary archive on the controller
+          ansible.builtin.file:
+            path: "{{ zvonilka_archive.path }}"
+            state: absent
+          delegate_to: localhost
+          become: false
+          when: zvonilka_archive.path is defined
+
+    - name: Build and start lab stack
+      ansible.builtin.command:
+        argv:
+          - docker
+          - compose
+          - --env-file
+          - "{{ zvonilka_path }}/shared/compose.env"
+          - -f
+          - compose.staging.yaml
+          - up
+          - -d
+          - --build
+        chdir: "{{ zvonilka_release }}"
+      no_log: true
+
+    - name: Verify API readiness through Nginx
+      ansible.builtin.uri:
+        url: http://127.0.0.1/health/ready
+        headers:
+          Host: zvonilka-lab.test
+      register: zvonilka_ready
+      until: zvonilka_ready.status == 200
+      retries: 30
+      delay: 2
+
+    - name: Verify that Nginx blocks public registration
+      ansible.builtin.uri:
+        url: "http://127.0.0.1{{ item }}"
+        headers:
+          Host: zvonilka-lab.test
+        method: POST
+        status_code: 404
+      loop:
+        - /api/v1/auth/register
+        - /api/v1/auth/register/

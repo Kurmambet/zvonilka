@@ -1,0 +1,34 @@
+---
+zvonilka_path: /opt/zvonilka-lab
+base_swap_size_mb: 0
+docker_prune_enabled: false
+docker_users: []
+deploy_ssh_public_keys: []
+
+nginx_sites:
+  - name: zvonilka-lab.test
+    server_names: [zvonilka-lab.test]
+    tls: false
+    locations:
+      - path: "= /api/v1/auth/register"
+        return_status: 404
+      - path: "= /api/v1/auth/register/"
+        return_status: 404
+      - path: "= /api/v1/rooms"
+        proxy_pass: http://127.0.0.1:8002
+      - path: /api/v1/rooms/
+        proxy_pass: http://127.0.0.1:8002
+        websocket: true
+        timeout: 120s
+        access_log: false
+      - path: /
+        proxy_pass: http://127.0.0.1:8002
+
+apps:
+  - name: zvonilka-lab
+    path: "{{ zvonilka_path }}"
+    env_files:
+      - dest: compose.env
+        vars:
+          ZVONILKA_STAGING_DB_PASSWORD: "{{ vault_zvonilka_lab_db_password }}"
+          ZVONILKA_STAGING_JWT_SECRET: "{{ vault_zvonilka_lab_jwt_secret }}"
