@@ -1,0 +1,74 @@
+---
+- name: Configure Zvonilka STUN and TURN
+  hosts: zvonilka_edge
+  become: true
+
+  vars:
+    turn_ipv4: "2.56.119.52"
+    turn_realm: turn.zvonilka.website
+
+  tasks:
+    - name: Validate TURN shared secret
+      ansible.builtin.assert:
+        that:
+          - (vault_zvonilka_turn_secret | default('')) is match('^[0-9a-f]{64}$')
+        fail_msg: Provide a dedicated TURN secret as 64 lowercase hex characters.
+      no_log: true
+
+    - name: Install coturn without starting the packaged service
+      ansible.builtin.apt:
+        name: coturn
+        install_recommends: false
+        policy_rc_d: 101
+
+    - name: Install authenticated IPv4-only TURN configuration
+      ansible.builtin.copy:
+        dest: /etc/turnserver.conf
+        owner: root
+        group: turnserver
+        mode: "0640"
+        content: |
+          listening-ip={{ turn_ipv4 }}
+          relay-ip={{ turn_ipv4 }}
+          listening-port=3478
+          min-port=49152
+          max-port=49215
+
+          realm={{ turn_realm }}
+          fingerprint
+          use-auth-secret
+          static-auth-secret={{ vault_zvonilka_turn_secret }}
+          stale-nonce
+          user-quota=8
+          total-quota=32
+
+          no-cli
+          no-tls
+          no-dtls
+          no-tcp-relay
+          no-multicast-peers
+
+          denied-peer-ip=0.0.0.0-0.255.255.255
+          denied-peer-ip=10.0.0.0-10.255.255.255
+          denied-peer-ip=100.64.0.0-100.127.255.255
+          denied-peer-ip=127.0.0.0-127.255.255.255
+          denied-peer-ip=169.254.0.0-169.254.255.255
+          denied-peer-ip=172.16.0.0-172.31.255.255
+          denied-peer-ip=192.168.0.0-192.168.255.255
+          denied-peer-ip=198.18.0.0-198.19.255.255
+      no_log: true
+      notify: Restart coturn
+
+    - ansible.builtin.meta: flush_handlers
+
+    - name: Keep coturn running
+      ansible.builtin.systemd_service:
+        name: coturn
+        enabled: true
+        state: started
+
+  handlers:
+    - name: Restart coturn
+      ansible.builtin.systemd_service:
+        name: coturn
+        state: restarted
