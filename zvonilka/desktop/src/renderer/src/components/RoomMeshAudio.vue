@@ -476,12 +476,15 @@ function createLink(peer: AudioPeer): Link {
   return link
 }
 
-function gather(link: Link): Promise<void> {
+function gather(link: Link): Promise<'complete' | 'timeout'> {
   const { pc } = link
-  if (pc.iceGatheringState === 'complete') return Promise.resolve()
+  if (pc.iceGatheringState === 'complete') return Promise.resolve('complete')
 
   return new Promise((resolve, reject) => {
-    const timer = window.setTimeout(cancel, 5000)
+    const timer = window.setTimeout(() => {
+      cleanup()
+      resolve('timeout')
+    }, 5000)
 
     function cleanup(): void {
       window.clearTimeout(timer)
@@ -497,7 +500,7 @@ function gather(link: Link): Promise<void> {
     function check(): void {
       if (pc.iceGatheringState !== 'complete') return
       cleanup()
-      resolve()
+      resolve('complete')
     }
 
     link.cancelGather = cancel
@@ -508,10 +511,26 @@ function gather(link: Link): Promise<void> {
 
 async function sendDescription(link: Link, type: AudioSignal['type']): Promise<void> {
   if (!current(link)) return
-  await gather(link)
+  const gathering = await gather(link)
   if (!current(link)) return
   const sdp = link.pc.localDescription?.sdp
-  if (!sdp || !(await window.api.sendAudio(link.peer, { type, sdp }))) fail(link)
+  const relayOnly = link.pc.getConfiguration().iceTransportPolicy === 'relay'
+  const candidates = sdp?.split(/\r?\n/).filter((line) => line.startsWith('a=candidate:')) ?? []
+  const usable = relayOnly
+    ? candidates.some((line) => /\s+typ\s+relay(?:\s|$)/i.test(line))
+    : candidates.length > 0
+  if (gathering === 'timeout') {
+    diagnostics.record('ice.gather-timeout', link, { type, relayOnly, usable })
+  }
+  if (!sdp || !usable) {
+    drop(link)
+    setNote(link, relayOnly ? 'Не найден кандидат TURN.' : 'Не найден кандидат ICE.')
+    return
+  }
+  const sent = await window.api.sendAudio(link.peer, { type, sdp })
+  if (!current(link)) return
+  if (sent) diagnostics.record('sdp.sent', link, { type, gathering })
+  else fail(link)
 }
 
 async function attach(link: Link, transceiver: RTCRtpTransceiver): Promise<void> {

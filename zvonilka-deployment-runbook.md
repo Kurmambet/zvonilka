@@ -219,6 +219,18 @@ printf 'ZVONILKA_STAGING_IMAGE=%s\n' "$IMAGE" > release.env
 scp compose.staging.yaml compose.staging.vps.yaml release.env "$VPS:/opt/zvonilka-staging/"
 ```
 
+если до scp не дошли, только образ если отправлися
+
+```bash
+printf '%s\n' \
+  'ZVONILKA_STAGING_IMAGE=zvonilka-backend:3e60ca03b5e6c05d4791cf1ae7f71a600c3b10f7' \
+  > release.env
+
+scp compose.staging.yaml compose.staging.vps.yaml release.env \
+  root@2.56.119.52:/opt/zvonilka-staging/
+
+```
+
 При первом подключении сверить отпечаток через доверенную сессию на VPS: `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`. Пароль при вводе не отображается, передача образа может долго идти без вывода. Успех: `Loaded image: zvonilka-backend:b9cc369e6ac8cc6d558a3243f7a640f9f071a096`. Образ хранится в Docker, а не в рабочем каталоге. Override снимает `build` у `migrate` и `api` через `!reset null`.
 
 ## 5. Backend на VPS
