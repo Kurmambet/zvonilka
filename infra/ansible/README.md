@@ -79,3 +79,41 @@ curl --max-time 5 -fsS http://127.0.0.1:8002/health/ready
 curl -sS -o /dev/null -w 'HTTP %{http_code}\n' \
   https://api.zvonilka.website/api/v1/ice-servers
 ```
+
+# Применить новый ансибл
+
+```bash
+ansible-playbook -i edge-vps.ini edge-zvonilka.yml --limit swiss-vps --ask-pass --list-hosts
+ansible-playbook -i edge-vps.ini edge-zvonilka.yml --limit swiss-vps --ask-pass --syntax-check
+ansible-playbook -i edge-vps.ini edge-zvonilka.yml --limit swiss-vps --ask-pass
+
+# с выпуском сертификатов (если с ними чтото не так)
+ansible-playbook -i edge-vps.ini edge-zvonilka.yml --ask-pass   -e '{"edge_issue":true,"edge_email":"pitr.vishnyakovv.05@gmail.com"}'
+
+
+# поднять turn
+ansible-playbook -i edge-vps.ini turn-zvonilka.yml --syntax-check
+ansible-playbook -i edge-vps.ini turn-zvonilka.yml   --limit swiss-vps --ask-pass --ask-vault-pass   -e @turn-vault.yml
+
+
+# применить несколько плейбуков
+ansible-playbook -i edge-vps.ini zvonilka-vps.yml \
+  --limit new-vps --ask-pass --ask-vault-pass
+
+# new-vps нужно добавить в группы, на которые нацелены соответствующие playbook’и
+```
+
+## Как посмотреть, что можно запустить
+
+```bash
+# Какие хосты входят в какие группы
+ansible-inventory -i edge-vps.ini --graph
+
+# Кого затронет конкретный playbook и какие задачи объявлены
+ansible-playbook -i edge-vps.ini edge-zvonilka.yml \
+  --limit swiss-vps --list-hosts --list-tasks
+
+# Какие варианты выборочного запуска уже описаны тегами
+ansible-playbook -i edge-vps.ini edge-zvonilka.yml \
+  --limit swiss-vps --list-tags
+```
