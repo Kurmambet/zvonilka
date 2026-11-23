@@ -26,10 +26,12 @@ npm run dev
 ```bash
 # For windows
 npm run build:win
+npm run build:linux -- --publish never
 
 # For macOS
 npm run build:mac
 
 # For Linux
 npm run build:linux
+npm run build:linux -- --publish never
 ```

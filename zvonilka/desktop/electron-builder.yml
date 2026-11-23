@@ -1,5 +1,5 @@
 appId: com.electron.app
-productName: desktop
+productName: ZVonilka
 directories:
   buildResources: build
 files:

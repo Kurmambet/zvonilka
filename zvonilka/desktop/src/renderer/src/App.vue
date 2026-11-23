@@ -166,7 +166,7 @@ async function logout(): Promise<void> {
 <template>
   <main class="panel" :class="{ 'panel--workspace': profile }">
     <header class="panel-topbar">
-      <h1>Zvonilka</h1>
+      <h1>ZVonilka</h1>
 
       <details class="server-probe">
         <summary>Проверить API</summary>
