@@ -1,0 +1,119 @@
+.rooms,
+.room-card,
+.ready-grid,
+.lobby-grid,
+form,
+label,
+.invite-item {
+  display: grid;
+  gap: 0.625rem;
+  min-width: 0;
+}
+.rooms {
+  margin-top: 0.75rem;
+  gap: 0.875rem;
+}
+.ready-grid,
+.lobby-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
+}
+.room-card,
+.route-setting,
+.invite-dialog {
+  padding: 0.875rem;
+  border: 1px solid var(--ev-c-gray-3);
+  border-radius: 0.625rem;
+  background: var(--color-background-mute);
+  color: var(--color-text);
+}
+.room-card {
+  align-content: start;
+}
+h3 {
+  font-weight: 600;
+}
+.route-setting {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 11rem), 1fr));
+  align-items: center;
+}
+input,
+button,
+select {
+  min-width: 0;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--ev-c-gray-1);
+  border-radius: 0.5rem;
+  background: var(--color-background-soft);
+  color: var(--color-text);
+  color-scheme: dark;
+  font: inherit;
+}
+input {
+  width: 100%;
+  user-select: text;
+}
+input:focus,
+select:focus {
+  border-color: #9baec2;
+  outline: 1px solid #9baec2;
+  outline-offset: -1px;
+}
+button:focus-visible,
+summary:focus-visible {
+  outline: 1px solid #9baec2;
+  outline-offset: 2px;
+}
+button:not(:disabled),
+summary {
+  cursor: pointer;
+}
+button:disabled {
+  opacity: 0.6;
+}
+button.primary {
+  background: #a8e6c2;
+  color: #12271d;
+}
+button.disconnect {
+  border-color: #795052;
+  color: #ffb4ab;
+}
+code {
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+details > form,
+details > code {
+  margin-top: 0.5rem;
+}
+.call-header,
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.route-label {
+  font-size: 0.875rem;
+}
+.invite-dialog {
+  margin: auto;
+  width: min(30rem, calc(100vw - 2rem));
+  max-height: calc(100vh - 2rem);
+  overflow: auto;
+}
+.invite-dialog[open] {
+  display: grid;
+  gap: 0.75rem;
+}
+.invite-dialog::backdrop {
+  background: rgb(0 0 0 / 55%);
+}
+.error {
+  color: #ffb4ab;
+  user-select: text;
+}
+.presence-notice {
+  color: #ffd89b;
+}
