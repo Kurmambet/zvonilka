@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
 import type { ComponentPublicInstance } from 'vue'
+import SoundSettings from './SoundSettings.vue'
 import type { AudioPeer, AudioSignal, WsDiagnostic } from '../../../shared/audio'
 import { useCallDiagnostics } from '../composables/useCallDiagnostics'
 import type { LinkDiagnostic } from '../composables/useCallDiagnostics'
@@ -193,6 +194,10 @@ function setPlayerVolume(player: HTMLAudioElement | null | undefined, event: Eve
   const input = event.currentTarget
   if (!player || !(input instanceof HTMLInputElement)) return
   player.volume = input.valueAsNumber / 100
+}
+
+function bindTestPlayer(element: unknown): void {
+  testPlayer.value = element instanceof HTMLAudioElement ? element : null
 }
 
 function setTestVolume(event: Event): void {
@@ -660,6 +665,7 @@ async function toggleMicrophone(): Promise<void> {
     }
 
     diagnostics.record('microphone.changed', undefined, { enabled: microphone.value })
+    // Музыка должна быть отдельным источником, а не заменой дорожки микрофона.
     const track = capture?.getAudioTracks()[0] ?? null
 
     await Promise.all(
@@ -764,66 +770,26 @@ onBeforeUnmount(() => {
       >
         {{ microphone ? 'Выключить микрофон' : 'Включить микрофон' }}
       </button>
+      <!-- Действия камеры и демонстрации добавляются в панель звонка. -->
       <slot />
     </div>
-    <details class="sound-settings">
-      <summary>Настройки звука</summary>
-      <label class="device-field">
-        <span>Устройство ввода</span>
-        <select v-model="selectedMicrophone" :disabled="busy || testing || microphone">
-          <option value="">Системный по умолчанию</option>
-          <option
-            v-if="
-              selectedMicrophone &&
-              !microphones.some((item) => item.deviceId === selectedMicrophone)
-            "
-            :value="selectedMicrophone"
-            disabled
-          >
-            Выбранный микрофон недоступен
-          </option>
-          <option v-for="(item, index) in microphones" :key="item.deviceId" :value="item.deviceId">
-            {{ item.label || `Микрофон ${index + 1}` }}
-          </option>
-        </select>
-      </label>
-      <button type="button" :disabled="busy || microphone" @click="toggleMicrophoneTest">
-        {{ testing ? 'Остановить и прослушать' : 'Проверить микрофон' }}
-      </button>
-
-      <label v-if="testing" class="test-level">
-        <span>Говорите в микрофон</span>
-        <meter :value="level" min="0" max="100" />
-      </label>
-
-      <div v-if="testRecordingUrl" class="audio-item">
-        <p class="audio-caption">Тестовая запись · слышите только вы</p>
-        <audio
-          ref="testPlayer"
-          :src="testRecordingUrl"
-          hidden
-          @play="testPlaying = true"
-          @pause="testPlaying = false"
-          @ended="testPlaying = false"
-        />
-        <div class="audio-controls">
-          <button type="button" :disabled="microphone || busy" @click="toggleTestPlayback">
-            {{ testPlaying ? 'Пауза' : 'Слушать' }}
-          </button>
-          <button type="button" :disabled="microphone || busy" @click="restartTestPlayback">
-            С начала
-          </button>
-          <input
-            type="range"
-            min="0"
-            max="100"
-            :value="testVolume"
-            aria-label="Громкость тестовой записи"
-            @input="setTestVolume"
-          />
-        </div>
-      </div>
-    </details>
+    <SoundSettings
+      v-model="selectedMicrophone"
+      :microphones="microphones"
+      :busy="busy"
+      :testing="testing"
+      :microphone="microphone"
+      :level="level"
+      :test-recording-url="testRecordingUrl"
+      :test-playing="testPlaying"
+      :test-volume="testVolume"
+      @player="bindTestPlayer"
+      @playing="testPlaying = $event"
+      @toggle-test="toggleMicrophoneTest"
+      @toggle-playback="toggleTestPlayback"
+      @restart-playback="restartTestPlayback"
+      @volume="setTestVolume"
+    />
 
     <p v-if="microphoneError" class="audio-error" role="alert">{{ microphoneError }}</p>
   </section>

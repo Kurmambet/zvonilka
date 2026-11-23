@@ -1,7 +1,5 @@
 .audio-links,
 .audio-section,
-.device-field,
-.test-level,
 .audio-item {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -51,20 +49,15 @@
   color: #b7f0d1;
 }
 
-.device-field,
-.test-level,
 .audio-item {
   gap: 0.375rem;
 }
 
-.device-field,
-.test-level,
 .audio-caption {
   color: #c4c8d0;
   font-size: 0.875rem;
 }
 
-select,
 button {
   width: 100%;
   min-width: 0;
@@ -85,14 +78,12 @@ button:not(:disabled):hover {
   border-color: #9cc5ff;
 }
 
-button:disabled,
-select:disabled {
+button:disabled {
   opacity: 0.65;
   cursor: default;
 }
 
-button:focus-visible,
-select:focus-visible {
+button:focus-visible {
   outline: 1px solid #9baec2;
   outline-offset: 2px;
 }
@@ -105,12 +96,6 @@ select:focus-visible {
 .call-button-live {
   border-color: #588872;
   background: #203d32;
-}
-
-.test-level meter {
-  display: block;
-  width: 100%;
-  min-width: 0;
 }
 
 .audio-item {
@@ -174,13 +159,7 @@ select:focus-visible {
   user-select: text;
 }
 
-.sound-settings summary {
-  cursor: pointer;
-}
 .mic-actions :slotted(button) {
   flex: 1 1 8rem;
   width: auto;
-}
-.sound-settings > :not(summary) {
-  margin-top: 0.5rem;
 }
