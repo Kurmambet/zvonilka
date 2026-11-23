@@ -5,7 +5,7 @@ import type { AudioPeer, AudioSignal, WsDiagnostic } from '../../../shared/audio
 import { useCallDiagnostics } from '../composables/useCallDiagnostics'
 import type { LinkDiagnostic } from '../composables/useCallDiagnostics'
 
-const props = defineProps<{ displayName?: string }>()
+const props = defineProps<{ displayName?: string; iceMode: IceMode }>()
 
 type Link = {
   peer: AudioPeer
@@ -52,7 +52,6 @@ const diagnosticsStatus = ref('')
 const routeReport = ref('')
 type IceMode = 'all' | 'relay'
 
-const selectedIceMode = ref<IceMode>('all')
 const lastIceMode = ref<IceMode | null>(null)
 
 function iceModeLabel(mode: IceMode): string {
@@ -442,7 +441,7 @@ function bindPlayer(peer: AudioPeer, el: Element | ComponentPublicInstance | nul
 }
 
 function createLink(peer: AudioPeer): Link {
-  const policy = selectedIceMode.value
+  const policy = props.iceMode
   lastIceMode.value = policy
   const pc = new RTCPeerConnection({ iceTransportPolicy: policy })
   const iceReady = window.api
@@ -709,93 +708,11 @@ onBeforeUnmount(() => {
 
 <template>
   <div v-if="peers.length" class="audio-links">
-    <section class="audio-section" aria-label="Ваш микрофон">
-      <div class="audio-heading">
-        <h4>Ваш микрофон</h4>
-        <span class="mic-state" :class="{ 'mic-state-live': microphone }" role="status">
-          {{ testing ? 'Идёт проверка' : microphone ? 'Включён в звонке' : 'Выключен в звонке' }}
-        </span>
-      </div>
-
-      <label class="device-field">
-        <span>Устройство ввода</span>
-        <select v-model="selectedMicrophone" :disabled="busy || testing || microphone">
-          <option value="">Системный по умолчанию</option>
-          <option
-            v-if="
-              selectedMicrophone &&
-              !microphones.some((item) => item.deviceId === selectedMicrophone)
-            "
-            :value="selectedMicrophone"
-            disabled
-          >
-            Выбранный микрофон недоступен
-          </option>
-          <option v-for="(item, index) in microphones" :key="item.deviceId" :value="item.deviceId">
-            {{ item.label || `Микрофон ${index + 1}` }}
-          </option>
-        </select>
-      </label>
-
-      <div class="mic-actions">
-        <button
-          class="call-button"
-          :class="{ 'call-button-live': microphone }"
-          type="button"
-          :disabled="busy || testing"
-          @click="toggleMicrophone"
-        >
-          {{ microphone ? 'Выключить микрофон' : 'Включить микрофон' }}
-        </button>
-        <button type="button" :disabled="busy || microphone" @click="toggleMicrophoneTest">
-          {{ testing ? 'Остановить и прослушать' : 'Проверить микрофон' }}
-        </button>
-      </div>
-
-      <label v-if="testing" class="test-level">
-        <span>Говорите в микрофон</span>
-        <meter :value="level" min="0" max="100" />
-      </label>
-
-      <div v-if="testRecordingUrl" class="audio-item">
-        <p class="audio-caption">Тестовая запись · слышите только вы</p>
-        <audio
-          ref="testPlayer"
-          :src="testRecordingUrl"
-          hidden
-          @play="testPlaying = true"
-          @pause="testPlaying = false"
-          @ended="testPlaying = false"
-        />
-        <div class="audio-controls">
-          <button type="button" :disabled="microphone || busy" @click="toggleTestPlayback">
-            {{ testPlaying ? 'Пауза' : 'Слушать' }}
-          </button>
-          <button type="button" :disabled="microphone || busy" @click="restartTestPlayback">
-            С начала
-          </button>
-          <input
-            type="range"
-            min="0"
-            max="100"
-            :value="testVolume"
-            aria-label="Громкость тестовой записи"
-            @input="setTestVolume"
-          />
-        </div>
-      </div>
-
-      <p v-if="microphoneError" class="audio-error" role="alert">{{ microphoneError }}</p>
-    </section>
-
     <section class="audio-section" aria-label="Собеседники">
       <div class="audio-heading">
         <h4>Собеседники</h4>
         <span class="peer-count">{{ peers.length }}</span>
       </div>
-
-      <button type="button" @click="refreshRouteReport">Сетевой отчёт</button>
-      <p v-if="routeReport" class="route-report" role="status">{{ routeReport }}</p>
 
       <div v-for="(peer, index) in peers" :key="key(peer)" class="audio-item">
         <div class="audio-heading">
@@ -829,15 +746,93 @@ onBeforeUnmount(() => {
     </section>
   </div>
 
+  <section v-if="peers.length" class="audio-section" aria-label="Ваш микрофон">
+    <div class="audio-heading">
+      <h4>Ваш микрофон</h4>
+      <span class="mic-state" :class="{ 'mic-state-live': microphone }" role="status">
+        {{ testing ? 'Идёт проверка' : microphone ? 'Включён в звонке' : 'Выключен в звонке' }}
+      </span>
+    </div>
+
+    <div class="mic-actions">
+      <button
+        class="call-button"
+        :class="{ 'call-button-live': microphone }"
+        type="button"
+        :disabled="busy || testing"
+        @click="toggleMicrophone"
+      >
+        {{ microphone ? 'Выключить микрофон' : 'Включить микрофон' }}
+      </button>
+      <slot />
+    </div>
+    <details class="sound-settings">
+      <summary>Настройки звука</summary>
+      <label class="device-field">
+        <span>Устройство ввода</span>
+        <select v-model="selectedMicrophone" :disabled="busy || testing || microphone">
+          <option value="">Системный по умолчанию</option>
+          <option
+            v-if="
+              selectedMicrophone &&
+              !microphones.some((item) => item.deviceId === selectedMicrophone)
+            "
+            :value="selectedMicrophone"
+            disabled
+          >
+            Выбранный микрофон недоступен
+          </option>
+          <option v-for="(item, index) in microphones" :key="item.deviceId" :value="item.deviceId">
+            {{ item.label || `Микрофон ${index + 1}` }}
+          </option>
+        </select>
+      </label>
+      <button type="button" :disabled="busy || microphone" @click="toggleMicrophoneTest">
+        {{ testing ? 'Остановить и прослушать' : 'Проверить микрофон' }}
+      </button>
+
+      <label v-if="testing" class="test-level">
+        <span>Говорите в микрофон</span>
+        <meter :value="level" min="0" max="100" />
+      </label>
+
+      <div v-if="testRecordingUrl" class="audio-item">
+        <p class="audio-caption">Тестовая запись · слышите только вы</p>
+        <audio
+          ref="testPlayer"
+          :src="testRecordingUrl"
+          hidden
+          @play="testPlaying = true"
+          @pause="testPlaying = false"
+          @ended="testPlaying = false"
+        />
+        <div class="audio-controls">
+          <button type="button" :disabled="microphone || busy" @click="toggleTestPlayback">
+            {{ testPlaying ? 'Пауза' : 'Слушать' }}
+          </button>
+          <button type="button" :disabled="microphone || busy" @click="restartTestPlayback">
+            С начала
+          </button>
+          <input
+            type="range"
+            min="0"
+            max="100"
+            :value="testVolume"
+            aria-label="Громкость тестовой записи"
+            @input="setTestVolume"
+          />
+        </div>
+      </div>
+    </details>
+
+    <p v-if="microphoneError" class="audio-error" role="alert">{{ microphoneError }}</p>
+  </section>
+  <div v-else class="mic-actions"><slot /></div>
+
   <details v-if="diagnosticsAvailable || wsDiagnostics.length" class="diagnostics-panel">
     <summary>Диагностика звонка</summary>
-    <label class="device-field">
-      <span>Маршрут следующего подключения</span>
-      <select v-model="selectedIceMode" :disabled="peers.length > 0">
-        <option value="all">Авто (рекомендуется)</option>
-        <option value="relay">Только TURN (диагностика)</option>
-      </select>
-    </label>
+    <button type="button" @click="refreshRouteReport">Сетевой отчёт</button>
+    <p v-if="routeReport" class="route-report" role="status">{{ routeReport }}</p>
     <div class="audio-controls">
       <button type="button" @click="copyDiagnostics('summary')">Скопировать сводку</button>
       <button type="button" @click="copyDiagnostics('json')">Скопировать JSON</button>
@@ -949,7 +944,7 @@ select:disabled {
 
 button:focus-visible,
 select:focus-visible {
-  outline: 2px solid #9cc5ff;
+  outline: 1px solid #9baec2;
   outline-offset: 2px;
 }
 
@@ -1028,5 +1023,16 @@ select:focus-visible {
   width: 100%;
   max-width: 100%;
   user-select: text;
+}
+
+.sound-settings summary {
+  cursor: pointer;
+}
+.mic-actions :slotted(button) {
+  flex: 1 1 8rem;
+  width: auto;
+}
+.sound-settings > :not(summary) {
+  margin-top: 0.5rem;
 }
 </style>

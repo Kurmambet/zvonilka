@@ -21,6 +21,20 @@ const roomIdInput = ref('')
 
 const presence = ref<PresenceState>({ phase: 'idle' })
 
+const callActive = computed(() => ['connecting', 'online'].includes(presence.value.phase))
+const iceMode = ref<'all' | 'relay'>('all')
+const inviteDialog = ref<HTMLDialogElement | null>(null)
+const invitationFeedback = ref<string | null>(null)
+
+async function copyInvitation(invitation: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(invitation)
+    invitationFeedback.value = 'Приглашение скопировано.'
+  } catch {
+    invitationFeedback.value = 'Не удалось скопировать. Выделите текст приглашения вручную.'
+  }
+}
+
 const presenceNotice = ref('')
 let presenceNoticeTimer: number | undefined
 
@@ -213,53 +227,61 @@ function openRoom(): Promise<void> {
 </script>
 
 <template>
-  <h2 id="rooms-title">Комнаты</h2>
+  <h2 id="rooms-title">{{ callActive ? 'Звонок' : 'Комнаты' }}</h2>
   <section class="rooms" aria-labelledby="rooms-title" :aria-busy="pending">
-    <div class="room-layout">
-      <section class="room-card room-tools" aria-label="Управление комнатами">
-        <button type="button" :disabled="pending || ownedRoom !== null" @click="create">
-          Создать комнату
-        </button>
-
-        <template v-if="ownedRoom">
-          <p>
-            Созданная комната: <code>{{ ownedRoom.room_id }}</code>
-          </p>
-
-          <button v-if="ownedRoom.memberCount < 3" type="button" :disabled="pending" @click="issue">
-            Выпустить приглашение
+    <template v-if="!callActive">
+      <div v-if="ownedRoom || joinedRoom" class="ready-grid">
+        <section v-if="ownedRoom" class="room-card" aria-label="Своя комната">
+          <h3>Своя комната</h3>
+          <button
+            class="primary"
+            type="button"
+            :disabled="pending"
+            @click="connect(ownedRoom.room_id)"
+          >
+            Войти в звонок
           </button>
-
-          <p v-else>Все места в комнате заняты.</p>
-
-          <button type="button" :disabled="pending" @click="closeOwnedRoom">Закрыть комнату</button>
-
-          <label v-for="(invitation, index) in invitationsForOwnedRoom" :key="invitation">
-            Приглашение {{ index + 1 }}
-            <input :value="invitation" readonly />
-          </label>
-
-          <button type="button" :disabled="pending" @click="connect(ownedRoom.room_id)">
-            Подключиться к своей комнате
+          <div class="actions">
+            <button type="button" @click="inviteDialog?.showModal()">Пригласить</button>
+          </div>
+          <details>
+            <summary>Управление комнатой</summary>
+            <code>{{ ownedRoom.room_id }}</code>
+            <button type="button" :disabled="pending" @click="closeOwnedRoom">
+              Закрыть комнату
+            </button>
+          </details>
+        </section>
+        <section v-if="joinedRoom" class="room-card" aria-label="Доступная комната">
+          <h3>Доступная комната</h3>
+          <code>{{ joinedRoom.room_id }}</code>
+          <button
+            class="primary"
+            type="button"
+            :disabled="pending"
+            @click="connect(joinedRoom.room_id)"
+          >
+            Войти в звонок
           </button>
-
-          <p v-if="invitationsForOwnedRoom.length">
-            Ссылки сохранены только в этом окне. Уже использованная ссылка не подойдёт другому
-            аккаунту.
-          </p>
-        </template>
-
-        <details>
-          <summary>Открыть комнату или принять приглашение</summary>
-
-          <form @submit.prevent="openRoom">
-            <label>
-              ID существующей комнаты
-              <input v-model="roomIdInput" :disabled="pending" maxlength="64" required />
-            </label>
-            <button type="submit" :disabled="pending">Открыть комнату</button>
-          </form>
-
+        </section>
+      </div>
+      <label v-if="ownedRoom || joinedRoom" class="route-setting">
+        Маршрут аудио
+        <select v-model="iceMode" :disabled="pending">
+          <option value="all">Авто</option>
+          <option value="relay">Только TURN</option>
+        </select>
+      </label>
+      <div class="lobby-grid">
+        <section v-if="!ownedRoom" class="room-card" aria-label="Создание комнаты">
+          <h3>Своя комната</h3>
+          <p>Создайте комнату, чтобы пригласить собеседника.</p>
+          <button class="primary" type="button" :disabled="pending" @click="create">
+            Создать комнату
+          </button>
+        </section>
+        <section class="room-card" aria-label="Вход по приглашению">
+          <h3>Войти по приглашению</h3>
           <form @submit.prevent="redeem">
             <label>
               Приглашение от владельца
@@ -274,46 +296,83 @@ function openRoom(): Promise<void> {
             </label>
             <button type="submit" :disabled="pending">Принять приглашение</button>
           </form>
-        </details>
-        <p v-if="status" role="status">{{ status }}</p>
-        <p v-if="joinedRoom" role="status">
-          Доступна комната: <code>{{ joinedRoom.room_id }}</code>
-        </p>
+          <details>
+            <summary>Открыть по ID</summary>
+            <form @submit.prevent="openRoom">
+              <label
+                >ID комнаты
+                <input v-model="roomIdInput" :disabled="pending" maxlength="64" required
+              /></label>
+              <button type="submit" :disabled="pending">Открыть комнату</button>
+            </form>
+          </details>
+        </section>
+      </div>
+    </template>
 
-        <button
-          v-if="joinedRoom"
-          type="button"
-          :disabled="pending"
-          @click="connect(joinedRoom.room_id)"
-        >
-          Подключиться к доступной комнате
-        </button>
-      </section>
-
-      <section class="room-card room-presence" aria-label="Подключение к комнате">
-        <div class="presence-header">
-          <h3>Подключение</h3>
+    <section v-show="callActive" class="room-card call-stage" aria-label="Звонок">
+      <header class="call-header">
+        <div>
+          <h3>{{ presence.phase === 'online' ? 'В комнате' : 'Подключаемся…' }}</h3>
           <p v-if="presence.phase === 'online'" role="status">
-            Онлайн: {{ presence.userIds.length }}
+            {{
+              presence.userIds.length === 1
+                ? 'Ожидаем собеседника'
+                : `Онлайн: ${presence.userIds.length}`
+            }}
           </p>
-          <button
-            v-if="presence.phase === 'connecting' || presence.phase === 'online'"
-            class="disconnect-button"
-            type="button"
-            @click="disconnect"
-          >
-            Отключиться
-          </button>
+          <p class="route-label">Режим: {{ iceMode === 'relay' ? 'Только TURN' : 'Авто' }}</p>
         </div>
+        <button
+          v-if="
+            presence.phase === 'online' &&
+            ownedRoom &&
+            'roomId' in presence &&
+            presence.roomId === ownedRoom.room_id
+          "
+          type="button"
+          @click="inviteDialog?.showModal()"
+        >
+          Пригласить
+        </button>
+      </header>
+      <RoomAudio :display-name="props.displayName" :ice-mode="iceMode">
+        <button v-if="callActive" class="disconnect" type="button" @click="disconnect">
+          {{ presence.phase === 'connecting' ? 'Отменить' : 'Выйти из звонка' }}
+        </button>
+      </RoomAudio>
+    </section>
 
-        <p v-if="presenceNotice" class="presence-notice" role="status">{{ presenceNotice }}</p>
-        <p v-if="presence.phase === 'connecting'" role="status">Подключаемся…</p>
-        <p v-else-if="presence.phase !== 'online'">Нет активного подключения.</p>
-
-        <RoomAudio :display-name="props.displayName" />
-      </section>
-    </div>
-
+    <dialog
+      ref="inviteDialog"
+      class="invite-dialog"
+      aria-labelledby="invite-title"
+      @close="invitationFeedback = null"
+    >
+      <header class="call-header">
+        <h3 id="invite-title">Приглашения</h3>
+        <form method="dialog"><button type="submit">Готово</button></form>
+      </header>
+      <template v-if="ownedRoom">
+        <button v-if="ownedRoom.memberCount < 3" type="button" :disabled="pending" @click="issue">
+          Выпустить приглашение
+        </button>
+        <p v-else>Все места в комнате заняты.</p>
+        <p v-if="pending" role="status">Выполняется запрос…</p>
+        <p v-if="error" class="error" role="alert">{{ error }}</p>
+        <div
+          v-for="(invitation, index) in invitationsForOwnedRoom"
+          :key="invitation"
+          class="invite-item"
+        >
+          <label>Приглашение {{ index + 1 }} <input :value="invitation" readonly /></label>
+          <button type="button" @click="copyInvitation(invitation)">Скопировать</button>
+        </div>
+        <p v-if="invitationFeedback" role="status">{{ invitationFeedback }}</p>
+      </template>
+    </dialog>
+    <p v-if="presenceNotice" class="presence-notice" role="status">{{ presenceNotice }}</p>
+    <p v-if="status" role="status">{{ status }}</p>
     <p v-if="pending" role="status">Выполняется запрос…</p>
     <p v-if="error" class="error" role="alert">{{ error }}</p>
   </section>
@@ -321,115 +380,122 @@ function openRoom(): Promise<void> {
 
 <style scoped>
 .rooms,
+.room-card,
+.ready-grid,
+.lobby-grid,
 form,
-label {
+label,
+.invite-item {
   display: grid;
-  gap: 0.5rem;
-}
-
-.rooms,
-form {
-  margin-top: 1rem;
-}
-
-input,
-button {
+  gap: 0.625rem;
   min-width: 0;
-  padding: 0.5rem;
+}
+.rooms {
+  margin-top: 0.75rem;
+  gap: 0.875rem;
+}
+.ready-grid,
+.lobby-grid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
+}
+.room-card,
+.route-setting,
+.invite-dialog {
+  padding: 0.875rem;
+  border: 1px solid var(--ev-c-gray-3);
+  border-radius: 0.625rem;
+  background: var(--color-background-mute);
+  color: var(--color-text);
+}
+.room-card {
+  align-content: start;
+}
+h3 {
+  font-weight: 600;
+}
+.route-setting {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 11rem), 1fr));
+  align-items: center;
+}
+input,
+button,
+select {
+  min-width: 0;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--ev-c-gray-1);
+  border-radius: 0.5rem;
+  background: var(--color-background-soft);
+  color: var(--color-text);
+  color-scheme: dark;
   font: inherit;
 }
-
-code,
 input {
+  width: 100%;
   user-select: text;
 }
-
+input:focus,
+select:focus {
+  border-color: #9baec2;
+  outline: 1px solid #9baec2;
+  outline-offset: -1px;
+}
+button:focus-visible,
+summary:focus-visible {
+  outline: 1px solid #9baec2;
+  outline-offset: 2px;
+}
+button:not(:disabled),
+summary {
+  cursor: pointer;
+}
+button:disabled {
+  opacity: 0.6;
+}
+button.primary {
+  background: #a8e6c2;
+  color: #12271d;
+}
+button.disconnect {
+  border-color: #795052;
+  color: #ffb4ab;
+}
 code {
   overflow-wrap: anywhere;
+  user-select: text;
 }
-
+details > form,
+details > code {
+  margin-top: 0.5rem;
+}
+.call-header,
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.route-label {
+  font-size: 0.875rem;
+}
+.invite-dialog {
+  margin: auto;
+  width: min(30rem, calc(100vw - 2rem));
+  max-height: calc(100vh - 2rem);
+  overflow: auto;
+}
+.invite-dialog[open] {
+  display: grid;
+  gap: 0.75rem;
+}
+.invite-dialog::backdrop {
+  background: rgb(0 0 0 / 55%);
+}
 .error {
   color: #ffb4ab;
   user-select: text;
 }
-
-.room-layout {
-  display: grid;
-  grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
-  align-items: start;
-  gap: 0.75rem;
-}
-
-.room-card {
-  display: grid;
-  gap: 0.5rem;
-  min-width: 0;
-  padding: 0.75rem;
-  border: 1px solid var(--ev-c-gray-3);
-  border-radius: 0.625rem;
-  background: var(--color-background-mute);
-}
-
-.room-card input {
-  width: 100%;
-}
-
-.room-card summary {
-  cursor: pointer;
-}
-
-.room-card form {
-  margin-top: 0.625rem;
-}
-
 .presence-notice {
   color: #ffd89b;
-}
-
-@media (max-width: 680px) {
-  .room-layout {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .room-presence {
-    grid-row: 1;
-  }
-}
-
-.room-presence {
-  grid-template-columns: minmax(0, 1fr);
-}
-
-.room-presence > button {
-  justify-self: stretch;
-  border: 1px solid #795052;
-  border-radius: 0.5rem;
-  background: transparent;
-  color: #ffb4ab;
-  cursor: pointer;
-}
-
-.room-presence > button:hover {
-  background: #3d292b;
-}
-
-.room-presence > button:focus-visible {
-  outline: 2px solid #9cc5ff;
-  outline-offset: 2px;
-}
-
-.presence-header {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.375rem 0.75rem;
-}
-
-.presence-header h3 {
-  margin-inline-end: auto;
-}
-
-.presence-header p {
-  font-size: 0.875rem;
 }
 </style>

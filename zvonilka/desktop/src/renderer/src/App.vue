@@ -168,7 +168,8 @@ async function logout(): Promise<void> {
     <header class="panel-topbar">
       <h1>Zvonilka</h1>
 
-      <section class="server-probe" aria-label="Проверка доступности API">
+      <details class="server-probe">
+        <summary>Проверить API</summary>
         <div class="server-probe__buttons">
           <button
             type="button"
@@ -196,7 +197,7 @@ async function logout(): Promise<void> {
           </template>
           <template v-else-if="probeResult">{{ probeProfile }}: API недоступен</template>
         </p>
-      </section>
+      </details>
     </header>
 
     <section v-if="profile" aria-labelledby="profile-title">
@@ -204,7 +205,7 @@ async function logout(): Promise<void> {
         <h2 id="profile-title">{{ profile.display_name }}</h2>
 
         <button type="button" :disabled="loggingOut" @click="logout">
-          {{ loggingOut ? 'Выход…' : 'Выйти' }}
+          {{ loggingOut ? 'Выход…' : 'Выйти из аккаунта' }}
         </button>
       </div>
       <RoomsPanel
@@ -266,7 +267,7 @@ async function logout(): Promise<void> {
           />
         </label>
 
-        <button type="submit" :disabled="pending">
+        <button class="primary" type="submit" :disabled="pending">
           {{ pending ? 'Подождите…' : registering ? 'Создать аккаунт' : 'Войти' }}
         </button>
 
@@ -382,5 +383,45 @@ dd {
 
 .server-probe__status:empty {
   margin: 0;
+}
+
+.panel :is(input, select, button) {
+  min-width: 0;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--ev-c-gray-1);
+  border-radius: 0.5rem;
+  background: var(--color-background-mute);
+  color: var(--color-text);
+  color-scheme: dark;
+  font: inherit;
+}
+
+.panel button:not(:disabled),
+.server-probe summary {
+  cursor: pointer;
+}
+
+.panel button.primary {
+  background: #a8e6c2;
+  color: #12271d;
+}
+
+.panel button:disabled {
+  opacity: 0.6;
+}
+
+.panel :is(input, select):focus {
+  border-color: #9baec2;
+  outline: 1px solid #9baec2;
+  outline-offset: -1px;
+}
+
+.panel :is(button, summary):focus-visible {
+  outline: 1px solid #9baec2;
+  outline-offset: 2px;
+}
+
+.server-probe__buttons {
+  margin-top: 0.375rem;
 }
 </style>
