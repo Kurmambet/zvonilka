@@ -117,3 +117,26 @@ ansible-playbook -i edge-vps.ini edge-zvonilka.yml \
 ansible-playbook -i edge-vps.ini edge-zvonilka.yml \
   --limit swiss-vps --list-tags
 ```
+
+# Проверка rata limit на nginx по ip
+
+```bash
+ansible-playbook -i edge-vps.ini edge-zvonilka.yml \
+  --limit swiss-vps --ask-pass --syntax-check
+
+ansible-playbook -i edge-vps.ini edge-zvonilka.yml \
+  --limit swiss-vps --ask-pass
+
+
+# и проверка:
+
+sudo grep -F 'POST /api/v1/auth/register' \
+  /var/log/nginx/access.log | tail -n 30
+
+sudo grep -F 'zvonilka_register_ip' \
+  /var/log/nginx/error.log | tail -n 20
+
+systemctl show nginx -p FragmentPath -p ExecStart --no-pager
+nginx -T 2>&1 | less
+ss -tulpn | grep ':443'
+```
