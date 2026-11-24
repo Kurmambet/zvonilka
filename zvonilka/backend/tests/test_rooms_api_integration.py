@@ -68,6 +68,53 @@ class RoomApiTests(AuthPgFixture):
         self.assertEqual(response.headers["cache-control"], "no-store")
         self.assertIn("request_id", response.json()["error"])
 
+    async def test_direct_invite_is_bound_to_recipient_and_accept_retries(self):
+        recipient_id, recipient = await self.user("bob")
+        _, stranger = await self.user("charlie")
+        room = await self.room()
+        path = f"/api/v1/rooms/{room['room_id']}/direct-invites"
+        inbox = "/api/v1/direct-invites"
+        denied = await self.client.post(path, headers=stranger, json={"username": "bob"})
+        self.assert_error(denied, 403, "not_owner")
+        for _ in range(2):
+            sent = await self.client.post(path, headers=self.owner, json={"username": "BOB"})
+            self.assertEqual(sent.status_code, 201, sent.text)
+        self.assertEqual((await self.client.get(inbox, headers=stranger)).json(), {"items": []})
+        items = (await self.client.get(inbox, headers=recipient)).json()["items"]
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["sender_username"], "alice")
+        accept = f"{path}/{items[0]['id']}/accept"
+        self.assert_error(await self.client.post(accept, headers=stranger), 404, "invite_not_found")
+        for _ in range(2):
+            accepted = await self.client.post(accept, headers=recipient)
+            self.assertEqual(accepted.status_code, 200, accepted.text)
+            members = accepted.json()["members"]
+            self.assertEqual(sum(item["user_id"] == recipient_id for item in members), 1)
+        self.assertEqual((await self.client.get(inbox, headers=recipient)).json(), {"items": []})
+
+    async def test_direct_invite_decline_and_room_close(self):
+        _, recipient = await self.user("bob")
+        room = await self.room()
+        room_path = f"/api/v1/rooms/{room['room_id']}"
+        path = room_path + "/direct-invites"
+        inbox = "/api/v1/direct-invites"
+        sent = await self.client.post(path, headers=self.owner, json={"username": "bob"})
+        self.assertEqual(sent.status_code, 201, sent.text)
+        first = (await self.client.get(inbox, headers=recipient)).json()["items"][0]["id"]
+        declined = await self.client.post(f"{path}/{first}/decline", headers=recipient)
+        self.assertEqual(declined.status_code, 200, declined.text)
+        self.assertEqual((await self.client.get(inbox, headers=recipient)).json(), {"items": []})
+        sent = await self.client.post(path, headers=self.owner, json={"username": "bob"})
+        self.assertEqual(sent.status_code, 201, sent.text)
+        second = (await self.client.get(inbox, headers=recipient)).json()["items"][0]["id"]
+        self.assertNotEqual(first, second)
+        closed = await self.client.delete(room_path, headers=self.owner)
+        self.assertEqual(closed.status_code, 204, closed.text)
+        self.assert_error(
+            await self.client.post(f"{path}/{second}/accept", headers=recipient), 410, "room_closed"
+        )
+        self.assertEqual((await self.client.get(inbox, headers=recipient)).json(), {"items": []})
+
     async def test_unauthenticated_requests_cannot_mutate_rooms(self):
         from zvonilka.rooms.invitations import encode_invitation
 

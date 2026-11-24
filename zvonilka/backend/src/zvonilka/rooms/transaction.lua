@@ -97,6 +97,21 @@ if op == 'create' then
     r.admitted[request.actor] = true
     rooms[request.room_id] = r
     result = snapshot(r)
+elseif op == 'direct_inbox' then
+    local items = {}
+    for room_id, room in pairs(rooms) do
+        if room.state ~= 'closed' then
+            for id, inv in pairs(room.invites) do
+                if inv.recipient == request.actor and not inv.used_by
+                    and not inv.revoked and inv.expires_at > now then
+                    items[#items+1] = {room_id=room_id, id=id,
+                        sender_username=inv.sender_username, expires_at=inv.expires_at}
+                end
+            end
+        end
+    end
+    table.sort(items, function(a, b) return a.expires_at > b.expires_at end)
+    return cjson.encode({ok=true, value={items=items}})
 elseif op == 'sweep' then
     result = {records=count(rooms)}
 else
@@ -113,9 +128,18 @@ else
         result = snapshot(r)
     elseif r.state == 'closed' then
         return fail('room_closed')
-    elseif op == 'issue_invite' then
+    elseif op == 'issue_invite' or op == 'issue_direct' then
         if r.owner ~= request.actor then return fail('not_owner') end
         if r.invites[request.digest] then return fail('invite_exists') end
+        if op == 'issue_direct' then
+            if r.admitted[request.recipient] then return fail('invite_exists') end
+            for _, inv in pairs(r.invites) do
+                if inv.recipient == request.recipient and not inv.revoked
+                    and not inv.used_by and inv.expires_at > now then
+                    return cjson.encode({ok=true, value={sent=true}})
+                end
+            end
+        end
         local outstanding = 0
         for _, inv in pairs(r.invites) do
             if not inv.used_by and not inv.revoked and inv.expires_at > now then
@@ -128,7 +152,13 @@ else
         end
         r.invites[request.digest] = {expires_at=now+cfg.invite_ttl}
         r.revision = r.revision + 1
-        result = {expires_at=r.invites[request.digest].expires_at}
+        if op == 'issue_direct' then
+            r.invites[request.digest].recipient = request.recipient
+            r.invites[request.digest].sender_username = request.sender_username
+            result = {sent=true}
+        else
+            result = {expires_at=r.invites[request.digest].expires_at}
+        end
     elseif op == 'revoke_invite' then
         if r.owner ~= request.actor then return fail('not_owner') end
         local inv = r.invites[request.digest]
@@ -139,9 +169,19 @@ else
             r.revision = r.revision + 1
         end
         result = {}
-    elseif op == 'redeem' then
+    elseif op == 'decline_direct' then
         local inv = r.invites[request.digest]
-        if not inv then return fail('invite_not_found') end
+        if not inv or inv.recipient ~= request.actor then return fail('invite_not_found') end
+        if inv.used_by then return fail('invite_consumed') end
+        if not inv.revoked then
+            inv.revoked = true
+            r.revision = r.revision + 1
+        end
+        result = {declined=true}
+    elseif op == 'redeem' or op == 'accept_direct' then
+        local inv = r.invites[request.digest]
+        if not inv or (op == 'accept_direct' and inv.recipient ~= request.actor)
+            or (op == 'redeem' and inv.recipient) then return fail('invite_not_found') end
         if r.owner == request.actor then return fail('owner_cannot_redeem') end
         -- Lost-response retry: consumed token remains bound to the same account.
         if inv.used_by then

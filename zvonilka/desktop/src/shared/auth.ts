@@ -15,7 +15,24 @@ export type LoginError =
 
 export type LoginResult = { ok: true; profile: Profile } | { ok: false; error: LoginError }
 
+export interface LookupUser {
+  username: string
+  display_name: string
+}
+
+export interface DirectInvite {
+  id: string
+  room_id: string
+  sender_username: string
+  expires_at: number
+}
+
 export interface DesktopApi {
+  lookupUser(username: string): Promise<RoomResult<LookupUser>>
+  sendDirectInvite(roomId: string, username: string): Promise<RoomResult<true>>
+  directInbox(): Promise<RoomResult<DirectInvite[]>>
+  acceptDirectInvite(roomId: string, id: string): Promise<RoomResult<RoomSummary>>
+  declineDirectInvite(roomId: string, id: string): Promise<RoomResult<true>>
   sendAudio: (
     peer: import('./audio').AudioPeer,
     signal: import('./audio').AudioSignal

@@ -28,6 +28,23 @@ const api: DesktopApi & { getIceServers: () => Promise<IceResult> } = {
   probeServer: (id) =>
     ipcRenderer.invoke('server:probe', id) as ReturnType<DesktopApi['probeServer']>,
 
+  lookupUser: (username) =>
+    ipcRenderer.invoke('rooms:lookup-user', username) as ReturnType<DesktopApi['lookupUser']>,
+  sendDirectInvite: (roomId, username) =>
+    ipcRenderer.invoke('rooms:send-direct', roomId, username) as ReturnType<
+      DesktopApi['sendDirectInvite']
+    >,
+  directInbox: () =>
+    ipcRenderer.invoke('rooms:direct-inbox') as ReturnType<DesktopApi['directInbox']>,
+  acceptDirectInvite: (roomId, id) =>
+    ipcRenderer.invoke('rooms:accept-direct', roomId, id) as ReturnType<
+      DesktopApi['acceptDirectInvite']
+    >,
+  declineDirectInvite: (roomId, id) =>
+    ipcRenderer.invoke('rooms:decline-direct', roomId, id) as ReturnType<
+      DesktopApi['declineDirectInvite']
+    >,
+
   createRoom: () => ipcRenderer.invoke('rooms:create') as Promise<RoomResult<RoomSummary>>,
 
   issueInvitation: (roomId) =>
