@@ -138,7 +138,17 @@ def create_app(settings: Settings | None = None):
                 finally:
                     await engine.dispose()
 
-    app = FastAPI(title="Zvonilka", version="0.5.0.dev0", lifespan=lifespan, debug=False)
+    docs_enabled = settings.environment == "dev"
+
+    app = FastAPI(
+        title="Zvonilka",
+        version="0.5.0.dev0",
+        lifespan=lifespan,
+        debug=False,
+        openapi_url="/openapi.json" if docs_enabled else None,
+        docs_url="/docs" if docs_enabled else None,
+        redoc_url="/redoc" if docs_enabled else None,
+    )
 
     def error(request, status, code):
         headers = {"WWW-Authenticate": "Bearer"} if status == 401 else {}
@@ -238,14 +248,14 @@ def create_app(settings: Settings | None = None):
 
     @app.post("/api/v1/auth/register", response_model=Profile, status_code=201)
     async def register(body: RegisterInput, request: Request):
-        await rate(request, "register_ip", 5, 3600)
+        # await rate(request, "register_ip", 5, 3600)
         return await request.app.state.auth.register(
             body.username, body.display_name, body.password.get_secret_value()
         )
 
     @app.post("/api/v1/auth/login", response_model=Tokens)
     async def login(body: LoginInput, request: Request):
-        await rate(request, "login_ip", 60, 60)
+        # await rate(request, "login_ip", 60, 60)
         await rate(request, "login_username", 12, 300, body.username)
         return await request.app.state.auth.login(body.username, body.password.get_secret_value())
 
