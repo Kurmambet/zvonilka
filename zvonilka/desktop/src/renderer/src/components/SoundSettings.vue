@@ -1,6 +1,10 @@
 <script setup lang="ts">
 defineProps<{
   microphones: MediaDeviceInfo[]
+  outputs: MediaDeviceInfo[]
+  outputId: string
+  outputSupported: boolean
+  outputNotice: string
   busy: boolean
   testing: boolean
   microphone: boolean
@@ -12,6 +16,7 @@ defineProps<{
 
 const selectedMicrophone = defineModel<string>({ required: true })
 const emit = defineEmits<{
+  output: [id: string]
   player: [element: unknown]
   playing: [playing: boolean]
   'toggle-test': []
@@ -19,6 +24,10 @@ const emit = defineEmits<{
   'restart-playback': []
   volume: [event: Event]
 }>()
+
+function changeOutput(event: Event): void {
+  if (event.currentTarget instanceof HTMLSelectElement) emit('output', event.currentTarget.value)
+}
 
 function bindPlayer(element: unknown): void {
   emit('player', element)
@@ -28,6 +37,22 @@ function bindPlayer(element: unknown): void {
 <template>
   <details class="sound-settings">
     <summary>Настройки звука</summary>
+    <label class="device-field">
+      <span>Устройство вывода</span>
+      <select :value="outputId" :disabled="!outputSupported" @change="changeOutput">
+        <option value="">Системное по умолчанию</option>
+        <option v-for="(item, index) in outputs" :key="item.deviceId" :value="item.deviceId">
+          {{ item.label || `Выход ${index + 1}` }}
+        </option>
+      </select>
+    </label>
+    <p v-if="!outputSupported" class="audio-caption">
+      Этот клиент поддерживает только системный выход.
+    </p>
+    <p v-else-if="!outputs.length" class="audio-caption">
+      Отдельные выходы не обнаружены. Подключите наушники или запустите проверку микрофона.
+    </p>
+    <p v-if="outputNotice" class="audio-caption" role="status">{{ outputNotice }}</p>
     <!-- Настройки обработки голоса добавляются рядом с выбором входа. -->
     <label class="device-field">
       <span>Устройство ввода</span>

@@ -45,6 +45,16 @@ const microphone = ref(false)
 const busy = ref(false)
 const microphones = shallowRef<MediaDeviceInfo[]>([])
 const selectedMicrophone = ref('')
+const outputs = shallowRef<MediaDeviceInfo[]>([])
+const outputId = ref('')
+const outputNotice = ref('')
+const outputSupported =
+  typeof (HTMLMediaElement.prototype as Partial<OutputPlayer>).setSinkId === 'function'
+const sinkTasks = new WeakMap<HTMLAudioElement, Promise<void>>()
+type OutputPlayer = HTMLAudioElement & {
+  readonly sinkId: string
+  setSinkId(id: string): Promise<void>
+}
 let capture: MediaStream | undefined
 let ticket = 0
 let disposed = false
@@ -202,7 +212,7 @@ function togglePeerMute(peer: AudioPeer): void {
   diagnostics.record('player.mute-changed', link, { muted: player.muted })
 
   if (!player.muted && player.paused && player.srcObject) {
-    void player.play().catch(() => {})
+    void playOnOutput(player, () => current(link) && link.player === player).catch(() => {})
   }
 }
 
@@ -210,6 +220,59 @@ function setPlayerVolume(player: HTMLAudioElement | null | undefined, event: Eve
   const input = event.currentTarget
   if (!player || !(input instanceof HTMLInputElement)) return
   player.volume = input.valueAsNumber / 100
+}
+
+function routePlayer(player: HTMLAudioElement): Promise<void> {
+  if (!outputSupported) return Promise.resolve()
+  const audio = player as OutputPlayer
+  const sync = async (): Promise<void> => {
+    while (audio.sinkId !== outputId.value) {
+      const requested = outputId.value
+      try {
+        await audio.setSinkId(requested)
+      } catch (error) {
+        if (requested !== outputId.value) continue
+        throw error
+      }
+    }
+  }
+  const task = (sinkTasks.get(player) ?? Promise.resolve()).then(sync, sync)
+  sinkTasks.set(player, task)
+  return task
+}
+
+function reportOutputError(error: unknown): void {
+  const detail = error instanceof Error ? ` (${error.name})` : ''
+  outputNotice.value = `Не удалось переключить выход${detail}. Выберите другое устройство.`
+}
+
+function selectOutput(id: string, notice = ''): void {
+  outputId.value = id
+  outputNotice.value = notice
+  const players = [testPlayer.value, ...Array.from(links.values(), (link) => link.player)]
+  for (const player of players) {
+    if (!player) continue
+    void routePlayer(player)
+      .then(() => {
+        if (outputId.value !== id || disposed || !player.paused || !player.srcObject) return
+        if (Array.from(links.values()).some((link) => link.player === player)) {
+          void player.play().catch(() => {})
+        }
+      })
+      .catch((error: unknown) => {
+        if (outputId.value === id) reportOutputError(error)
+      })
+  }
+}
+
+async function playOnOutput(player: HTMLAudioElement, stillCurrent: () => boolean): Promise<void> {
+  try {
+    await routePlayer(player)
+  } catch (error) {
+    if (stillCurrent()) reportOutputError(error)
+    return
+  }
+  if (stillCurrent()) await player.play()
 }
 
 function bindTestPlayer(element: unknown): void {
@@ -228,7 +291,7 @@ function toggleTestPlayback(): void {
   if (!player) return
 
   if (player.paused) {
-    void player.play().catch(() => {
+    void playOnOutput(player, () => testPlayer.value === player && !microphone.value).catch(() => {
       microphoneError.value = 'Не удалось воспроизвести тестовую запись.'
     })
   } else {
@@ -277,7 +340,10 @@ function startTestRecording(input: MediaStream, attempt: number): void {
       const player = testPlayer.value
       if (!player || testRecordingUrl.value !== url || microphone.value) return
       player.volume = testVolume.value / 100
-      void player.play().catch(() => {})
+      void playOnOutput(
+        player,
+        () => testPlayer.value === player && testRecordingUrl.value === url && !microphone.value
+      ).catch(() => {})
     })
   }
 
@@ -304,6 +370,17 @@ async function refreshMicrophones(): Promise<void> {
   try {
     const devices = await navigator.mediaDevices.enumerateDevices()
     if (disposed || request !== deviceRequest) return
+
+    outputs.value = devices.filter(
+      (device) =>
+        device.kind === 'audiooutput' &&
+        Boolean(device.deviceId) &&
+        device.deviceId !== 'default' &&
+        device.deviceId !== 'communications'
+    )
+    if (outputId.value && !outputs.value.some((device) => device.deviceId === outputId.value)) {
+      selectOutput('', 'Выбранный выход недоступен. Звук переключается на системный выход.')
+    }
 
     microphones.value = devices.filter(
       (device) =>
@@ -524,7 +601,10 @@ function play(link: Link): void {
   }
   if (player.srcObject === stream) return
   player.srcObject = stream
-  void player.play().catch(() => {
+  void playOnOutput(
+    player,
+    () => current(link) && link.player === player && player.srcObject === stream
+  ).catch(() => {
     if (current(link)) setNote(link, 'Автозапуск не сработал. Нажмите кнопку звука дважды.')
   })
 }
@@ -868,6 +948,11 @@ onBeforeUnmount(() => {
     <SoundSettings
       v-model="selectedMicrophone"
       :microphones="microphones"
+      :outputs="outputs"
+      :output-id="outputId"
+      :output-supported="outputSupported"
+      :output-notice="outputNotice"
+      @output="selectOutput"
       :busy="busy"
       :testing="testing"
       :microphone="microphone"
