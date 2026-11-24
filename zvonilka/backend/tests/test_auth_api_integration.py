@@ -70,6 +70,28 @@ class AuthApiTests(AuthPgFixture):
         self.assertNotIn("TOP_SECRET", response.text)
         self.assertEqual(response.json()["error"]["code"], "invalid_request")
 
+    async def test_exact_user_lookup(self):
+        path = "/api/v1/users/lookup"
+        self.assertEqual((await self.api_register()).status_code, 201)
+        pair = await self.api_login()
+        self.assertEqual(pair.status_code, 200)
+        headers = {"Authorization": "Bearer " + pair.json()["access_token"]}
+        unauthenticated = await self.client.get(path, params={"username": "alice"})
+        self.assertEqual(unauthenticated.status_code, 401)
+        response = await self.client.get(path, params={"username": " ALICE "}, headers=headers)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), {"username": "alice", "display_name": "Алиса"})
+        prefix = await self.client.get(path, params={"username": "ali"}, headers=headers)
+        self.assertEqual(prefix.status_code, 404)
+        self.assertEqual(prefix.json()["error"]["code"], "user_not_found")
+        invalid = await self.client.get(path, params={"username": "!"}, headers=headers)
+        self.assertEqual(invalid.status_code, 422)
+        for _ in range(17):
+            response = await self.client.get(path, params={"username": "ali"}, headers=headers)
+            self.assertEqual(response.status_code, 404)
+        limited = await self.client.get(path, params={"username": "alice"}, headers=headers)
+        self.assertEqual(limited.status_code, 429)
+
     async def test_body_limit(self):
         response = await self.client.post("/api/v1/auth/login", content=b"x" * 17000)
         self.assertEqual(response.status_code, 413)

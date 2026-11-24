@@ -72,6 +72,23 @@ class AuthService:
             "created_at": user.created_at,
         }
 
+    async def lookup_user(self, username: str) -> dict[str, str]:
+        try:
+            username = normalize_username(username)
+        except ValueError:
+            raise AuthError("invalid_request", 422) from None
+        async with self.sessions() as db:
+            row = (
+                await db.execute(
+                    select(User.username, User.display_name).where(
+                        User.username == username, User.enabled.is_(True)
+                    )
+                )
+            ).one_or_none()
+        if row is None:
+            raise AuthError("user_not_found", 404)
+        return {"username": row.username, "display_name": row.display_name}
+
     async def register(self, username: str, display_name: str, password: str) -> dict:
         username, display_name = normalize_username(username), validate_display_name(display_name)
         encoded = await self.passwords.hash(password)

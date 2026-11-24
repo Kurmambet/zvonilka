@@ -8,6 +8,11 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import type { IpcMainInvokeEvent, WebContents } from 'electron'
 import {
+  lookupUser,
+  sendDirectInvite,
+  directInbox,
+  acceptDirectInvite,
+  declineDirectInvite,
   createRoom,
   issueInvitation,
   redeemInvitation,
@@ -244,6 +249,19 @@ app.whenReady().then(() => {
 
   ipcMain.handle('ice:get', (event) => withAccessToken(event, getIceServers))
 
+  ipcMain.handle('rooms:lookup-user', (event, username: unknown) =>
+    withAccessToken(event, (url, token) => lookupUser(url, token, username))
+  )
+  ipcMain.handle('rooms:send-direct', (event, roomId: unknown, username: unknown) =>
+    withAccessToken(event, (url, token) => sendDirectInvite(url, token, roomId, username))
+  )
+  ipcMain.handle('rooms:direct-inbox', (event) => withAccessToken(event, directInbox))
+  ipcMain.handle('rooms:accept-direct', (event, roomId: unknown, id: unknown) =>
+    withAccessToken(event, (url, token) => acceptDirectInvite(url, token, roomId, id))
+  )
+  ipcMain.handle('rooms:decline-direct', (event, roomId: unknown, id: unknown) =>
+    withAccessToken(event, (url, token) => declineDirectInvite(url, token, roomId, id))
+  )
   ipcMain.handle('rooms:create', (event) => withAccessToken(event, createRoom))
 
   ipcMain.handle('rooms:issue-invitation', (event, roomId: unknown) =>

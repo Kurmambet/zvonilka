@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import RoomAudio from './RoomMeshAudio.vue'
-import { ref, computed, onBeforeUnmount } from 'vue'
+import { ref, computed, onBeforeUnmount, onMounted } from 'vue'
+import type { DirectInvite, LookupUser } from '../../../shared/auth'
 import type { RoomError, RoomResult, RoomSummary, PresenceState } from '../../../shared/auth'
 
 const emit = defineEmits<{ 'sign-in-required': [] }>()
@@ -155,6 +156,66 @@ async function run<T>(
   }
 }
 
+const targetUsername = ref('')
+const foundUser = ref<LookupUser | null>(null)
+const incoming = ref<DirectInvite[]>([])
+
+function findUser(): Promise<void> {
+  foundUser.value = null
+  invitationFeedback.value = null
+  return run(
+    () => window.api.lookupUser(targetUsername.value),
+    (user) => {
+      foundUser.value = user
+    }
+  )
+}
+
+function sendInvite(): Promise<void> | undefined {
+  const room = ownedRoom.value
+  const user = foundUser.value
+  if (!room || !user) return
+  invitationFeedback.value = null
+  return run(
+    () => window.api.sendDirectInvite(room.room_id, user.username),
+    () => {
+      invitationFeedback.value = `Приглашение отправлено @${user.username}.`
+      foundUser.value = null
+      targetUsername.value = ''
+    }
+  )
+}
+
+function loadInbox(): Promise<void> {
+  return run(window.api.directInbox, (items) => {
+    incoming.value = items
+  })
+}
+
+function acceptInvite(invite: DirectInvite): Promise<void> {
+  return run(
+    () => window.api.acceptDirectInvite(invite.room_id, invite.id),
+    (room) => {
+      joinedRoom.value = room
+      clearPresenceNotice()
+      incoming.value = incoming.value.filter((item) => item.id !== invite.id)
+    }
+  )
+}
+
+function declineInvite(invite: DirectInvite): Promise<void> {
+  return run(
+    () => window.api.declineDirectInvite(invite.room_id, invite.id),
+    () => {
+      incoming.value = incoming.value.filter((item) => item.id !== invite.id)
+    }
+  )
+}
+
+onMounted(() => {
+  void loadInbox()
+})
+
 function create(): Promise<void> {
   return run(window.api.createRoom, (room) => {
     clearPresenceNotice()
@@ -272,6 +333,23 @@ function openRoom(): Promise<void> {
           <option value="relay">Только TURN</option>
         </select>
       </label>
+      <details
+        class="room-card"
+        @toggle="($event.target as HTMLDetailsElement).open && loadInbox()"
+      >
+        <summary>Входящие приглашения ({{ incoming.length }})</summary>
+        <button type="button" :disabled="pending" @click="loadInbox">Обновить</button>
+        <p v-if="!incoming.length && !pending">Нет новых приглашений.</p>
+        <div v-for="invite in incoming" :key="invite.id" class="invite-item">
+          <p>@{{ invite.sender_username }} приглашает вас в комнату.</p>
+          <div class="actions">
+            <button type="button" :disabled="pending" @click="acceptInvite(invite)">Принять</button>
+            <button type="button" :disabled="pending" @click="declineInvite(invite)">
+              Отклонить
+            </button>
+          </div>
+        </div>
+      </details>
       <div class="lobby-grid">
         <section v-if="!ownedRoom" class="room-card" aria-label="Создание комнаты">
           <h3>Своя комната</h3>
@@ -354,6 +432,25 @@ function openRoom(): Promise<void> {
         <form method="dialog"><button type="submit">Готово</button></form>
       </header>
       <template v-if="ownedRoom">
+        <form @submit.prevent="findUser">
+          <label>
+            Имя пользователя целиком
+            <input
+              v-model="targetUsername"
+              maxlength="64"
+              required
+              :disabled="pending"
+              @input="foundUser = null"
+            />
+          </label>
+          <button type="submit" :disabled="pending">Найти</button>
+        </form>
+        <div v-if="foundUser" class="invite-item">
+          <p>{{ foundUser.display_name }} · @{{ foundUser.username }}</p>
+          <button type="button" :disabled="pending" @click="sendInvite">
+            Отправить приглашение
+          </button>
+        </div>
         <button v-if="ownedRoom.memberCount < 3" type="button" :disabled="pending" @click="issue">
           Выпустить приглашение
         </button>

@@ -5,20 +5,24 @@ import logging
 import os
 import time
 from contextlib import asynccontextmanager
-from uuid import UUID
+from typing import Annotated
+from uuid import UUID, uuid4
 
-from fastapi import Depends, FastAPI, Request, Response
+from fastapi import Depends, FastAPI, Path, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from pydantic import BaseModel
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError
 from starlette.exceptions import HTTPException
 
 from .auth.errors import AuthError
+from .auth.identity import normalize_username
 from .auth.jwt_tokens import AccessTokens
+from .auth.models import User
 from .auth.passwords import Passwords
 from .auth.rate_limit import AuthRateLimiter
 from .auth.schemas import (
@@ -35,12 +39,20 @@ from .config import Settings
 from .db import create_database
 from .http_boundary import SafeHttpBoundary
 from .observability.logging import log_event
+from .rooms.direct_invitations import DirectInviteInput
 from .rooms.http_errors import room_http_error
 from .rooms.repository import RoomError, RoomRepository
 from .rooms.router import room_router
+from .rooms.schemas import RoomView
 from .rooms.service import RoomService
 from .signaling.router import signaling_router
 from .signaling.service import SignalingService
+
+
+class UserLookup(BaseModel):
+    username: str
+    display_name: str
+
 
 bearer = HTTPBearer(auto_error=False)
 
@@ -242,6 +254,11 @@ def create_app(settings: Settings | None = None):
         await rate(request, "refresh_ip", 60, 60)
         return await request.app.state.auth.refresh(body.refresh_token.get_secret_value())
 
+    @app.get("/api/v1/users/lookup", response_model=UserLookup)
+    async def lookup_user(username: str, request: Request, user: Principal = Depends(principal)):
+        await rate(request, "user_lookup", 20, 60, str(user.user_id))
+        return await request.app.state.auth.lookup_user(username)
+
     @app.get("/api/v1/users/me", response_model=Profile)
     async def me(user: Principal = Depends(principal)):
         return user.profile()
@@ -294,6 +311,70 @@ def create_app(settings: Settings | None = None):
                 },
             ]
         }
+
+    @app.post("/api/v1/rooms/{room_id}/direct-invites", status_code=201)
+    async def send_direct_invite(
+        room_id: UUID,
+        body: DirectInviteInput,
+        request: Request,
+        user: Principal = Depends(principal),
+    ):
+        await rate(request, "direct_invite_send", 10, 300, str(user.user_id))
+        try:
+            username = normalize_username(body.username)
+        except ValueError:
+            raise AuthError("invalid_request", 422) from None
+        auth: AuthService = request.app.state.auth
+        async with auth.sessions() as db:
+            recipient = await db.scalar(
+                select(User.id).where(User.username == username, User.enabled.is_(True))
+            )
+        if recipient is None:
+            raise AuthError("user_not_found", 404)
+        return await request.app.state.room_repository._call(
+            "issue_direct",
+            str(user.user_id),
+            str(room_id),
+            digest=uuid4().hex,
+            recipient=str(recipient),
+            sender_username=user.username,
+        )
+
+    @app.get("/api/v1/direct-invites")
+    async def direct_inbox(request: Request, user: Principal = Depends(principal)):
+        await rate(request, "direct_invite_read", 30, 60, str(user.user_id))
+        result = await request.app.state.room_repository._call("direct_inbox", str(user.user_id))
+        return {"items": result["items"] or []}
+
+    @app.post("/api/v1/rooms/{room_id}/direct-invites/{invite_id}/accept", response_model=RoomView)
+    async def accept_direct_invite(
+        room_id: UUID,
+        invite_id: Annotated[str, Path(pattern=r"^[0-9a-f]{32}$")],
+        request: Request,
+        user: Principal = Depends(principal),
+    ):
+        await rate(request, "direct_invite_action", 20, 60, str(user.user_id))
+        return await request.app.state.room_repository._call(
+            "accept_direct",
+            str(user.user_id),
+            str(room_id),
+            digest=invite_id,
+        )
+
+    @app.post("/api/v1/rooms/{room_id}/direct-invites/{invite_id}/decline")
+    async def decline_direct_invite(
+        room_id: UUID,
+        invite_id: Annotated[str, Path(pattern=r"^[0-9a-f]{32}$")],
+        request: Request,
+        user: Principal = Depends(principal),
+    ):
+        await rate(request, "direct_invite_action", 20, 60, str(user.user_id))
+        return await request.app.state.room_repository._call(
+            "decline_direct",
+            str(user.user_id),
+            str(room_id),
+            digest=invite_id,
+        )
 
     app.include_router(room_router(principal, rate))
     app.include_router(signaling_router())

@@ -1,4 +1,4 @@
-import type { RoomError, RoomResult, RoomSummary } from '../shared/auth'
+import type { DirectInvite, LookupUser, RoomError, RoomResult, RoomSummary } from '../shared/auth'
 import { REQUEST_TIMEOUT_MS, isRecord, readJson } from './auth'
 
 const UUID = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i
@@ -236,5 +236,114 @@ export async function getRoom(
     `/api/v1/rooms/${input.trim().toLowerCase()}`,
     undefined,
     parseRoom
+  )
+}
+
+function validUsername(input: unknown): input is string {
+  return typeof input === 'string' && input.length <= 64 && input.trim().length > 0
+}
+
+export async function lookupUser(
+  url: string,
+  token: string,
+  username: unknown
+): Promise<RoomResult<LookupUser>> {
+  if (!validUsername(username)) return { ok: false, error: 'invalid_request' }
+  const path = `/api/v1/users/lookup?${new URLSearchParams({ username })}`
+  return requestRoom(url, token, 'GET', path, undefined, (data) =>
+    isRecord(data) && typeof data.username === 'string' && typeof data.display_name === 'string'
+      ? { username: data.username, display_name: data.display_name }
+      : null
+  )
+}
+
+export async function sendDirectInvite(
+  url: string,
+  token: string,
+  roomId: unknown,
+  username: unknown
+): Promise<RoomResult<true>> {
+  if (typeof roomId !== 'string' || !UUID.test(roomId) || !validUsername(username)) {
+    return { ok: false, error: 'invalid_request' }
+  }
+  return requestRoom<true>(
+    url,
+    token,
+    'POST',
+    `/api/v1/rooms/${roomId}/direct-invites`,
+    { username },
+    (data) => (isRecord(data) && data.sent === true ? true : null)
+  )
+}
+
+export function directInbox(url: string, token: string): Promise<RoomResult<DirectInvite[]>> {
+  return requestRoom(url, token, 'GET', '/api/v1/direct-invites', undefined, (data) => {
+    if (!isRecord(data) || !Array.isArray(data.items)) return null
+    const items: DirectInvite[] = []
+    for (const item of data.items as unknown[]) {
+      if (
+        !isRecord(item) ||
+        typeof item.id !== 'string' ||
+        !/^[a-f0-9]{32}$/.test(item.id) ||
+        typeof item.room_id !== 'string' ||
+        !UUID.test(item.room_id) ||
+        typeof item.sender_username !== 'string' ||
+        typeof item.expires_at !== 'number'
+      )
+        return null
+      items.push({
+        id: item.id,
+        room_id: item.room_id,
+        sender_username: item.sender_username,
+        expires_at: item.expires_at
+      })
+    }
+    return items
+  })
+}
+
+async function directAction<T>(
+  url: string,
+  token: string,
+  roomId: unknown,
+  id: unknown,
+  action: 'accept' | 'decline',
+  parse: (data: unknown) => T | null
+): Promise<RoomResult<T>> {
+  if (
+    typeof roomId !== 'string' ||
+    !UUID.test(roomId) ||
+    typeof id !== 'string' ||
+    !/^[a-f0-9]{32}$/.test(id)
+  ) {
+    return { ok: false, error: 'invalid_request' }
+  }
+  return requestRoom(
+    url,
+    token,
+    'POST',
+    `/api/v1/rooms/${roomId}/direct-invites/${id}/${action}`,
+    undefined,
+    parse
+  )
+}
+
+export function acceptDirectInvite(
+  url: string,
+  token: string,
+  roomId: unknown,
+  id: unknown
+): Promise<RoomResult<RoomSummary>> {
+  return directAction(url, token, roomId, id, 'accept', parseRoom)
+}
+
+export function declineDirectInvite(
+  url: string,
+  token: string,
+  roomId: unknown,
+  id: unknown
+): Promise<RoomResult<true>> {
+  return directAction<true>(url, token, roomId, id, 'decline', (data) =>
+    isRecord(data) && data.declined === true ? true : null
   )
 }

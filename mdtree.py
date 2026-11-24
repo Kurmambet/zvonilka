@@ -20,6 +20,41 @@
 # F — сформировать Markdown;
 # Q — отмена.
 
+# Можно и так сделать:
+"""
+cd /home/comp/projects/zvonilka
+
+(
+  git log -1 --format='HEAD %h %s'
+  git status --short --branch
+
+  backend=zvonilka/backend
+  src="$backend/src/zvonilka"
+
+  for f in \
+    "$src/api.py" \
+    "$src/auth/service.py" \
+    "$src/config.py" \
+    "$src/rooms/transaction.lua" \
+    "$backend/tests/auth_test_support.py" \
+    "$backend/tests/test_auth_api_integration.py" \
+    "$backend/tests/test_rooms_api_integration.py" \
+    "$backend/tests/test_repository.py" \
+    "$backend/tests/test_redis_integration.py"
+  do
+    if [ ! -f "$f" ]; then
+      printf '\n===== MISSING: %s =====\n' "$f"
+      continue
+    fi
+    printf '\n===== %s =====\n' "$f"
+    printf 'blob: %s\n' "$(git hash-object "$f")"
+    printf 'bytes: %s\n' "$(wc -c < "$f")"
+    printf '%s\n' '--- source ---'
+    cat "$f"
+    printf '\n%s\n' '--- end source ---'
+  done
+) > invitations-backend-current.txt
+"""
 
 import argparse
 import json
@@ -134,13 +169,13 @@ DEFAULT_CONFIG = {
         "Dockerfile",
         ".tsx",
         ".vue",
-        ".conf",
         ".tf",
         ".conf.j2",
         "env.j2",
         ".cfg",
         ".yml.example",
         ".local.j2",
+        ".lua",
     ],
     "exclude_extensions": [".woff2", ".png", ".jpg", ".jpeg", ".ico", ".svg", ".lock"],
     "secret_keywords": [
@@ -399,6 +434,7 @@ LANG_MAP = {
     ".tf": "terraform",
     ".cfg": "conf",
     ".local.j2": "jinja2",
+    ".lua": "lua",
 }
 
 
