@@ -15,6 +15,14 @@ type Link = {
   sender?: RTCRtpSender
   remote?: MediaStream
   player?: HTMLAudioElement
+  boost?: {
+    input: MediaStream
+    source: MediaStreamAudioSourceNode
+    gain: GainNode
+    ceiling: WaveShaperNode
+    output: MediaStreamAudioDestinationNode
+    consumer: HTMLAudioElement
+  }
   cancelGather?: () => void
   diagnostic: LinkDiagnostic
 }
@@ -23,6 +31,14 @@ const links = new Map<string, Link>()
 const peers = shallowRef<AudioPeer[]>([])
 const notes = ref<Record<string, string>>({})
 const mutedPeers = ref<Record<string, boolean>>({})
+const peerVolumes = ref<Record<string, number>>({})
+let playbackContext: AudioContext | undefined
+const peakCurve = Float32Array.from({ length: 2049 }, (_, i) => {
+  const sample = (i / 1024 - 1) * 2
+  const magnitude = Math.abs(sample)
+  if (magnitude <= 0.8) return sample
+  return Math.sign(sample) * (0.8 + 0.18 * Math.tanh((magnitude - 0.8) / 0.18))
+})
 
 const microphoneError = ref('')
 const microphone = ref(false)
@@ -415,6 +431,8 @@ function drop(link: Link): void {
   diagnostics.closeLink(link)
   const id = key(link.peer)
   delete mutedPeers.value[id]
+  delete peerVolumes.value[id]
+  clearPeerBoost(link)
   links.delete(id)
   link.cancelGather?.()
   link.pc.ontrack = null
@@ -430,10 +448,83 @@ function fail(link: Link): void {
   setNote(link, 'Нет связи с этим участником. Можно переподключиться к комнате.')
 }
 
+function clearPeerBoost(link: Link): void {
+  const boost = link.boost
+  if (!boost) return
+  link.boost = undefined
+  boost.consumer.pause()
+  boost.consumer.srcObject = null
+  boost.source.disconnect()
+  boost.gain.disconnect()
+  boost.ceiling.disconnect()
+  boost.output.stream.getTracks().forEach((track) => track.stop())
+}
+
+async function setPeerVolume(peer: AudioPeer, event: Event): Promise<void> {
+  const input = event.currentTarget
+  if (!(input instanceof HTMLInputElement)) return
+  const id = key(peer)
+  const link = links.get(id)
+  const volume = input.valueAsNumber
+  if (!link || !Number.isFinite(volume)) return
+  peerVolumes.value[id] = Math.max(0, Math.min(200, volume))
+  if (volume <= 100) {
+    play(link)
+    return
+  }
+  try {
+    const context = (playbackContext ??= new AudioContext())
+    if (context.state !== 'running') await context.resume()
+    if (current(link)) play(link)
+  } catch {
+    if (!current(link) || (peerVolumes.value[id] ?? 100) <= 100) return
+    peerVolumes.value[id] = 100
+    play(link)
+    setNote(link, 'Не удалось включить усиление звука.')
+  }
+}
+
 function play(link: Link): void {
-  if (!link.player || !link.remote || link.player.srcObject === link.remote) return
-  link.player.srcObject = link.remote
-  void link.player.play().catch(() => {
+  const { player, remote } = link
+  if (!player || !remote) return
+  const volume = peerVolumes.value[key(link.peer)] ?? 100
+  player.volume = Math.min(volume, 100) / 100
+  let stream = remote
+  const context = playbackContext
+  if (volume > 100 && context?.state === 'running') {
+    let boost = link.boost
+    if (!boost || boost.input !== remote) {
+      clearPeerBoost(link)
+      const source = context.createMediaStreamSource(remote)
+      const gain = context.createGain()
+      const ceiling = context.createWaveShaper()
+      const output = context.createMediaStreamDestination()
+      ceiling.curve = peakCurve
+      gain.gain.value = volume / 200
+      source.connect(gain).connect(ceiling).connect(output)
+      // Chromium may need a playing media element to feed a remote track to Web Audio.
+      const consumer = new Audio()
+      consumer.muted = true
+      consumer.srcObject = remote
+      const activeBoost = { input: remote, source, gain, ceiling, output, consumer }
+      boost = activeBoost
+      link.boost = activeBoost
+      void consumer.play().catch((error: unknown) => {
+        if (!current(link) || link.boost !== activeBoost) return
+        console.warn('Remote audio consumer failed to start', error)
+        peerVolumes.value[key(link.peer)] = 100
+        play(link)
+        setNote(link, 'Не удалось запустить усиление; громкость возвращена к 100%.')
+      })
+    }
+    boost.gain.gain.setTargetAtTime(volume / 200, context.currentTime, 0.01)
+    stream = boost.output.stream
+  } else {
+    clearPeerBoost(link)
+  }
+  if (player.srcObject === stream) return
+  player.srcObject = stream
+  void player.play().catch(() => {
     if (current(link)) setNote(link, 'Автозапуск не сработал. Нажмите кнопку звука дважды.')
   })
 }
@@ -709,6 +800,7 @@ onBeforeUnmount(() => {
   navigator.mediaDevices.removeEventListener('devicechange', refreshMicrophones)
   unsubscribe()
   update([])
+  if (playbackContext) void playbackContext.close().catch(() => {})
 })
 </script>
 
@@ -742,10 +834,10 @@ onBeforeUnmount(() => {
           <input
             type="range"
             min="0"
-            max="100"
-            value="100"
+            max="200"
+            :value="peerVolumes[key(peer)] ?? 100"
             :aria-label="`Громкость: ${peerLabel(peer, index)}`"
-            @input="setPlayerVolume(links.get(key(peer))?.player, $event)"
+            @input="setPeerVolume(peer, $event)"
           />
         </div>
       </div>
