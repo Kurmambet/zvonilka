@@ -1016,6 +1016,7 @@ onBeforeUnmount(() => {
       :test-volume="testVolume"
       @output="selectOutput"
       @microphone-gain="setMicrophoneGain"
+      @refresh-devices="refreshMicrophones"
       @player="bindTestPlayer"
       @playing="testPlaying = $event"
       @toggle-test="toggleMicrophoneTest"

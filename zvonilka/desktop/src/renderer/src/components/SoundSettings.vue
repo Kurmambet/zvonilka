@@ -19,6 +19,7 @@ defineProps<{
 const selectedMicrophone = defineModel<string>({ required: true })
 const emit = defineEmits<{
   output: [id: string]
+  'refresh-devices': []
   player: [element: unknown]
   playing: [playing: boolean]
   'toggle-test': []
@@ -38,17 +39,33 @@ function changeMicrophoneGain(event: Event): void {
   }
 }
 
+function refreshOnOpen(event: Event): void {
+  if (event.currentTarget instanceof HTMLDetailsElement && event.currentTarget.open) {
+    emit('refresh-devices')
+  }
+}
+
+function refreshDevices(): void {
+  emit('refresh-devices')
+}
+
 function bindPlayer(element: unknown): void {
   emit('player', element)
 }
 </script>
 
 <template>
-  <details class="sound-settings">
+  <details class="sound-settings" @toggle="refreshOnOpen">
     <summary>Настройки звука</summary>
     <label class="device-field">
       <span>Устройство вывода</span>
-      <select :value="outputId" :disabled="!outputSupported" @change="changeOutput">
+      <select
+        :value="outputId"
+        :disabled="!outputSupported"
+        @focus="refreshDevices"
+        @pointerdown="refreshDevices"
+        @change="changeOutput"
+      >
         <option value="">Системное по умолчанию</option>
         <option v-for="(item, index) in outputs" :key="item.deviceId" :value="item.deviceId">
           {{ item.label || `Выход ${index + 1}` }}
@@ -65,7 +82,12 @@ function bindPlayer(element: unknown): void {
     <!-- Настройки обработки голоса добавляются рядом с выбором входа. -->
     <label class="device-field">
       <span>Устройство ввода</span>
-      <select v-model="selectedMicrophone" :disabled="busy || testing || microphone">
+      <select
+        v-model="selectedMicrophone"
+        :disabled="busy || testing || microphone"
+        @focus="refreshDevices"
+        @pointerdown="refreshDevices"
+      >
         <option value="">Системный по умолчанию</option>
         <option
           v-if="
