@@ -9,6 +9,8 @@ defineProps<{
   testing: boolean
   microphone: boolean
   level: number
+  microphoneGain: number
+  microphoneOverload: boolean
   testRecordingUrl: string
   testPlaying: boolean
   testVolume: number
@@ -23,10 +25,17 @@ const emit = defineEmits<{
   'toggle-playback': []
   'restart-playback': []
   volume: [event: Event]
+  'microphone-gain': [percent: number]
 }>()
 
 function changeOutput(event: Event): void {
   if (event.currentTarget instanceof HTMLSelectElement) emit('output', event.currentTarget.value)
+}
+
+function changeMicrophoneGain(event: Event): void {
+  if (event.currentTarget instanceof HTMLInputElement) {
+    emit('microphone-gain', event.currentTarget.valueAsNumber)
+  }
 }
 
 function bindPlayer(element: unknown): void {
@@ -72,11 +81,25 @@ function bindPlayer(element: unknown): void {
         </option>
       </select>
     </label>
+    <label class="device-field">
+      <span>Усиление микрофона · {{ microphoneGain }}%</span>
+      <input
+        type="range"
+        min="50"
+        max="200"
+        :value="microphoneGain"
+        :disabled="busy"
+        @input="changeMicrophoneGain"
+      />
+    </label>
+    <p v-if="microphoneOverload" class="microphone-overload" role="status">
+      Сигнал перегружен - уменьши усиление
+    </p>
     <button type="button" :disabled="busy || microphone" @click="emit('toggle-test')">
       {{ testing ? 'Остановить и прослушать' : 'Проверить микрофон' }}
     </button>
 
-    <label v-if="testing" class="test-level">
+    <label v-if="testing || microphone" class="test-level">
       <span>Говорите в микрофон</span>
       <meter :value="level" min="0" max="100" />
     </label>
@@ -112,3 +135,8 @@ function bindPlayer(element: unknown): void {
 </template>
 
 <style scoped src="./SoundSettings.css"></style>
+<style scoped>
+.microphone-overload {
+  color: #ffb4ab;
+}
+</style>

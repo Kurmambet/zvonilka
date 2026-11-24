@@ -55,7 +55,17 @@ type OutputPlayer = HTMLAudioElement & {
   readonly sinkId: string
   setSinkId(id: string): Promise<void>
 }
-let capture: MediaStream | undefined
+type MicrophonePath = {
+  context: AudioContext
+  input: MediaStream
+  output: MediaStream
+  gain: GainNode
+  analyser: AnalyserNode
+}
+
+const microphoneGain = ref(100)
+const microphoneOverload = ref(false)
+let capture: MicrophonePath | undefined
 let ticket = 0
 let disposed = false
 let deviceRequest = 0
@@ -66,10 +76,9 @@ const testRecordingUrl = ref('')
 const testPlayer = ref<HTMLAudioElement | null>(null)
 const testPlaying = ref(false)
 const testVolume = ref(100)
-let testStream: MediaStream | undefined
-let testContext: AudioContext | undefined
+let testPath: MicrophonePath | undefined
 let testRecorder: MediaRecorder | undefined
-let testFrame = 0
+let meterFrame = 0
 let testTimer = 0
 
 const diagnostics = useCallDiagnostics()
@@ -416,6 +425,73 @@ function microphoneErrorText(error: unknown): string {
   return 'Не удалось запустить микрофон.'
 }
 
+async function openMicrophonePath(): Promise<MicrophonePath> {
+  const context = new AudioContext()
+  let input: MediaStream | undefined
+  let output: MediaStream | undefined
+  try {
+    input = await openMicrophone()
+    const source = context.createMediaStreamSource(input)
+    const gain = context.createGain()
+    gain.gain.value = microphoneGain.value / 100
+    const analyser = context.createAnalyser()
+    analyser.fftSize = 2048
+    const destination = context.createMediaStreamDestination()
+    destination.channelCount = 1
+    output = destination.stream
+    source.connect(gain).connect(analyser).connect(destination)
+    await context.resume()
+    return { context, input, output, gain, analyser }
+  } catch (error) {
+    input?.getTracks().forEach((track) => track.stop())
+    output?.getTracks().forEach((track) => track.stop())
+    void context.close().catch(() => {})
+    throw error
+  }
+}
+
+function closeMicrophonePath(path: MicrophonePath | undefined): void {
+  if (!path) return
+  path.input.getTracks().forEach((track) => track.stop())
+  path.output.getTracks().forEach((track) => track.stop())
+  void path.context.close().catch(() => {})
+}
+
+function stopMicrophoneMeter(): void {
+  window.cancelAnimationFrame(meterFrame)
+  level.value = 0
+}
+
+function startMicrophoneMeter(path: MicrophonePath): void {
+  stopMicrophoneMeter()
+  microphoneOverload.value = false
+  const samples = new Float32Array(path.analyser.fftSize)
+  function sample(): void {
+    if (capture !== path && testPath !== path) return
+    path.analyser.getFloatTimeDomainData(samples)
+    let sum = 0
+    let peak = 0
+    for (const value of samples) {
+      sum += value * value
+      peak = Math.max(peak, Math.abs(value))
+    }
+    level.value = Math.min(100, Math.round(Math.sqrt(sum / samples.length) * 400))
+    if (peak >= 0.98) microphoneOverload.value = true
+    meterFrame = window.requestAnimationFrame(sample)
+  }
+  sample()
+}
+
+function setMicrophoneGain(percent: number): void {
+  if (!Number.isFinite(percent)) return
+  microphoneGain.value = Math.max(50, Math.min(200, percent))
+  microphoneOverload.value = false
+  const path = capture ?? testPath
+  if (path) {
+    path.gain.gain.setTargetAtTime(microphoneGain.value / 100, path.context.currentTime, 0.01)
+  }
+}
+
 function stopMicrophoneTest(): void {
   const recorder = testRecorder
   testRecorder = undefined
@@ -426,17 +502,11 @@ function stopMicrophoneTest(): void {
     if (recorder.state !== 'inactive') recorder.stop()
   }
 
-  window.cancelAnimationFrame(testFrame)
+  stopMicrophoneMeter()
   window.clearTimeout(testTimer)
-  testStream?.getTracks().forEach((track) => track.stop())
-  testStream = undefined
-
-  const context = testContext
-  testContext = undefined
-  if (context) void context.close().catch(() => {})
-
+  closeMicrophonePath(testPath)
+  testPath = undefined
   testing.value = false
-  level.value = 0
 }
 
 async function toggleMicrophoneTest(): Promise<void> {
@@ -448,47 +518,26 @@ async function toggleMicrophoneTest(): Promise<void> {
 
   clearTestRecording()
   const attempt = ++ticket
-  let input: MediaStream | undefined
+  let path: MicrophonePath | undefined
   microphoneError.value = ''
   busy.value = true
 
   try {
-    const context = new AudioContext()
-    testContext = context
-    input = await openMicrophone()
+    path = await openMicrophonePath()
     if (attempt !== ticket) return
-    testStream = input
+    testPath = path
     void refreshMicrophones()
-
-    const source = context.createMediaStreamSource(input)
-    const analyser = context.createAnalyser()
-    analyser.fftSize = 1024
-    source.connect(analyser)
-    const samples = new Float32Array(analyser.fftSize)
-
-    await context.resume()
-    if (attempt !== ticket) return
-    startTestRecording(input, attempt)
+    startTestRecording(path.output, attempt)
     testing.value = true
-
-    function sample(): void {
-      if (attempt !== ticket || !testing.value) return
-      analyser.getFloatTimeDomainData(samples)
-      let sum = 0
-      for (const value of samples) sum += value * value
-      level.value = Math.min(100, Math.round(Math.sqrt(sum / samples.length) * 400))
-      testFrame = window.requestAnimationFrame(sample)
-    }
-
+    startMicrophoneMeter(path)
     testTimer = window.setTimeout(finishMicrophoneTest, 10_000)
-    sample()
   } catch (error) {
     if (attempt === ticket) {
       stopMicrophoneTest()
       microphoneError.value = microphoneErrorText(error)
     }
   } finally {
-    if (input && input !== testStream) input.getTracks().forEach((track) => track.stop())
+    if (path && path !== testPath && attempt !== ticket) closeMicrophonePath(path)
     if (attempt === ticket) busy.value = false
   }
 }
@@ -497,7 +546,9 @@ function stopCapture(): void {
   ticket++
   stopMicrophoneTest()
   clearTestRecording()
-  capture?.getTracks().forEach((track) => track.stop())
+  closeMicrophonePath(capture)
+  stopMicrophoneMeter()
+  microphoneOverload.value = false
   capture = undefined
   microphone.value = false
   busy.value = false
@@ -724,7 +775,7 @@ async function sendDescription(link: Link, type: AudioSignal['type']): Promise<v
 async function attach(link: Link, transceiver: RTCRtpTransceiver): Promise<void> {
   transceiver.direction = 'sendrecv'
   link.sender = transceiver.sender
-  const track = capture?.getAudioTracks()[0]
+  const track = capture?.output.getAudioTracks()[0]
   if (track) await link.sender.replaceTrack(track)
 }
 
@@ -819,25 +870,27 @@ async function toggleMicrophone(): Promise<void> {
   microphoneError.value = ''
   busy.value = true
   const attempt = ++ticket
-  let input: MediaStream | undefined
+  let path: MicrophonePath | undefined
 
   try {
     if (capture) {
-      capture.getTracks().forEach((track) => track.stop())
+      closeMicrophonePath(capture)
+      stopMicrophoneMeter()
+      microphoneOverload.value = false
       capture = undefined
       microphone.value = false
     } else {
-      input = await openMicrophone()
+      path = await openMicrophonePath()
       if (attempt !== ticket) return
-      if (!input.getAudioTracks().length) throw new Error('Microphone track missing')
-      capture = input
+      capture = path
+      startMicrophoneMeter(path)
       microphone.value = true
       void refreshMicrophones()
     }
 
     diagnostics.record('microphone.changed', undefined, { enabled: microphone.value })
     // Музыка должна быть отдельным источником, а не заменой дорожки микрофона.
-    const track = capture?.getAudioTracks()[0] ?? null
+    const track = capture?.output.getAudioTracks()[0] ?? null
 
     await Promise.all(
       [...links.values()].map(async (link) => {
@@ -853,7 +906,7 @@ async function toggleMicrophone(): Promise<void> {
   } catch (error) {
     if (attempt === ticket) microphoneError.value = microphoneErrorText(error)
   } finally {
-    if (input && input !== capture) input.getTracks().forEach((track) => track.stop())
+    if (path && path !== capture) closeMicrophonePath(path)
     if (attempt === ticket) busy.value = false
   }
 }
@@ -952,14 +1005,17 @@ onBeforeUnmount(() => {
       :output-id="outputId"
       :output-supported="outputSupported"
       :output-notice="outputNotice"
-      @output="selectOutput"
       :busy="busy"
       :testing="testing"
       :microphone="microphone"
       :level="level"
+      :microphone-gain="microphoneGain"
+      :microphone-overload="microphoneOverload"
       :test-recording-url="testRecordingUrl"
       :test-playing="testPlaying"
       :test-volume="testVolume"
+      @output="selectOutput"
+      @microphone-gain="setMicrophoneGain"
       @player="bindTestPlayer"
       @playing="testPlaying = $event"
       @toggle-test="toggleMicrophoneTest"
