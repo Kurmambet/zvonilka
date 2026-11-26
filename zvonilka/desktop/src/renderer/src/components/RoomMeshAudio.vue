@@ -478,7 +478,11 @@ function setHighPassHz(hz: number): void {
   if (path) updateMicrophoneHighPass(path, highPassHz.value)
 }
 
+let microphonePeakAt = -Infinity
+
 function stopMicrophoneMeter(): void {
+  microphonePeakAt = -Infinity
+  microphoneOverload.value = false
   window.cancelAnimationFrame(meterFrame)
   level.value = 0
 }
@@ -487,7 +491,7 @@ function startMicrophoneMeter(path: MicrophonePath): void {
   stopMicrophoneMeter()
   microphoneOverload.value = false
   const samples = new Float32Array(path.analyser.fftSize)
-  function sample(): void {
+  function sample(now = performance.now()): void {
     if (capture !== path && testPath !== path) return
     path.analyser.getFloatTimeDomainData(samples)
     let sum = 0
@@ -497,7 +501,8 @@ function startMicrophoneMeter(path: MicrophonePath): void {
       peak = Math.max(peak, Math.abs(value))
     }
     level.value = Math.min(100, Math.round(Math.sqrt(sum / samples.length) * 400))
-    if (peak >= 0.98) microphoneOverload.value = true
+    if (peak >= 0.98) microphonePeakAt = now
+    microphoneOverload.value = now - microphonePeakAt < 500
     meterFrame = window.requestAnimationFrame(sample)
   }
   sample()

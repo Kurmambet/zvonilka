@@ -204,7 +204,7 @@ async function logout(): Promise<void> {
       <div class="workspace-header">
         <h2 id="profile-title">{{ profile.display_name }}</h2>
 
-        <button type="button" :disabled="loggingOut" @click="logout">
+        <button class="logout-button" type="button" :disabled="loggingOut" @click="logout">
           {{ loggingOut ? 'Выход…' : 'Выйти из аккаунта' }}
         </button>
       </div>

@@ -99,7 +99,13 @@ function bindPlayer(element: unknown): void {
   </div>
   <label v-if="microphone" class="test-level">
     <span>Уровень микрофона</span>
-    <meter :value="level" min="0" max="100" />
+    <meter :value="level" min="0" max="100" :class="{ 'is-peak': microphoneOverload }" />
+    <span
+      class="meter-peak"
+      :class="{ 'is-visible': microphoneOverload }"
+      title="Уменьшите усиление"
+      >Пик</span
+    >
   </label>
   <dialog
     ref="settingsDialog"
@@ -222,9 +228,6 @@ function bindPlayer(element: unknown): void {
         />
       </label>
     </details>
-    <p v-if="microphoneOverload" class="microphone-overload" role="status">
-      Сигнал перегружен - уменьши усиление
-    </p>
     <p v-if="rnnoiseNotice" class="audio-caption" role="status">{{ rnnoiseNotice }}</p>
     <section class="microphone-test" aria-labelledby="microphone-test-title">
       <h4 id="microphone-test-title">Проверка микрофона</h4>
@@ -235,7 +238,13 @@ function bindPlayer(element: unknown): void {
 
       <label v-if="testing" class="test-level">
         <span>Говорите в микрофон</span>
-        <meter :value="level" min="0" max="100" />
+        <meter :value="level" min="0" max="100" :class="{ 'is-peak': microphoneOverload }" />
+        <span
+          class="meter-peak"
+          :class="{ 'is-visible': microphoneOverload }"
+          title="Уменьшите усиление"
+          >Пик</span
+        >
       </label>
 
       <div v-if="testRecordingUrl" class="audio-item">

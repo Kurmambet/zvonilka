@@ -189,3 +189,25 @@ button.dialog-close:hover {
   background: #314a63;
   color: #fff;
 }
+
+.test-level {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.test-level > span:first-child {
+  grid-column: 1 / -1;
+}
+
+.test-level meter.is-peak::-webkit-meter-optimum-value {
+  background: #ff7068;
+}
+
+.meter-peak {
+  visibility: hidden;
+  color: #ffb4ab;
+}
+
+.meter-peak.is-visible {
+  visibility: visible;
+}
