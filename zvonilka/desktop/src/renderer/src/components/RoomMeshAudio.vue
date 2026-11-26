@@ -10,6 +10,7 @@ import {
   setMicrophoneHighPassEnabled,
   updateMicrophoneGain,
   updateMicrophoneHighPass,
+  type NoiseMode,
   type MicrophonePath
 } from '../audio/microphonePipeline'
 import type { AudioPeer, AudioSignal, WsDiagnostic } from '../../../shared/audio'
@@ -67,6 +68,8 @@ type OutputPlayer = HTMLAudioElement & {
 }
 const microphoneGain = ref(100)
 const highPassEnabled = ref(true)
+const noiseMode = ref<NoiseMode>('standard')
+const rnnoiseNotice = ref('')
 const highPassHz = ref(DEFAULT_HIGH_PASS_HZ)
 const microphoneOverload = ref(false)
 let capture: MicrophonePath | undefined
@@ -407,10 +410,14 @@ async function refreshMicrophones(): Promise<void> {
   }
 }
 
-async function openMicrophone(): Promise<MediaStream> {
+async function openMicrophone(mode: NoiseMode): Promise<MediaStream> {
   const deviceId = selectedMicrophone.value
   const stream = await navigator.mediaDevices.getUserMedia({
-    audio: deviceId ? { deviceId: { exact: deviceId } } : true
+    audio: {
+      ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
+      echoCancellation: true,
+      noiseSuppression: mode === 'standard'
+    }
   })
   const settings = stream.getAudioTracks()[0]?.getSettings()
   console.info('[Zvonilka] microphone capture', {
@@ -437,11 +444,24 @@ function microphoneErrorText(error: unknown): string {
 }
 
 function openMicrophonePath(): Promise<MicrophonePath> {
-  return createMicrophonePipeline(openMicrophone, () => ({
-    gainPercent: microphoneGain.value,
-    highPassHz: highPassHz.value,
-    highPassEnabled: highPassEnabled.value
-  }))
+  rnnoiseNotice.value = ''
+  const attempt = ticket
+  return createMicrophonePipeline(
+    openMicrophone,
+    noiseMode.value,
+    (duringCapture) => {
+      if (attempt !== ticket || disposed) return
+      rnnoiseNotice.value = duringCapture
+        ? 'RNNoise остановился. Звук идёт без шумоподавления до перезапуска микрофона.'
+        : 'RNNoise недоступен. Используется штатное шумоподавление.'
+      noiseMode.value = 'standard'
+    },
+    () => ({
+      gainPercent: microphoneGain.value,
+      highPassHz: highPassHz.value,
+      highPassEnabled: highPassEnabled.value
+    })
+  )
 }
 
 function setHighPassEnabled(enabled: boolean): void {
@@ -1008,6 +1028,8 @@ onBeforeUnmount(() => {
       :microphone="microphone"
       :level="level"
       :high-pass-enabled="highPassEnabled"
+      :noise-mode="noiseMode"
+      :rnnoise-notice="rnnoiseNotice"
       :high-pass-hz="highPassHz"
       :microphone-gain="microphoneGain"
       :microphone-overload="microphoneOverload"
@@ -1016,6 +1038,7 @@ onBeforeUnmount(() => {
       :test-volume="testVolume"
       @output="selectOutput"
       @high-pass-enabled="setHighPassEnabled"
+      @noise-mode="noiseMode = $event"
       @high-pass-hz="setHighPassHz"
       @microphone-gain="setMicrophoneGain"
       @refresh-devices="refreshMicrophones"

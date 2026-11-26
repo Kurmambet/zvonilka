@@ -1,3 +1,7 @@
+import { prepareRnnoise } from './rnnoise'
+
+export type NoiseMode = 'off' | 'standard' | 'rnnoise'
+
 export const DEFAULT_HIGH_PASS_HZ = 90
 
 export function clampHighPassHz(hz: number): number {
@@ -9,6 +13,7 @@ export type MicrophonePath = {
   input: MediaStream
   output: MediaStream
   source: MediaStreamAudioSourceNode
+  rnnoise?: { node: AudioNode; dispose: () => void }
   highPassEnabled: boolean
   highPass: BiquadFilterNode
   gain: GainNode
@@ -16,14 +21,34 @@ export type MicrophonePath = {
 }
 
 export async function createMicrophonePipeline(
-  openInput: () => Promise<MediaStream>,
+  openInput: (mode: NoiseMode) => Promise<MediaStream>,
+  noiseMode: NoiseMode,
+  reportRnnoiseFallback: (duringCapture: boolean) => void,
   settings: () => { gainPercent: number; highPassHz: number; highPassEnabled: boolean }
 ): Promise<MicrophonePath> {
-  const context = new AudioContext()
+  let enableRnnoise = noiseMode === 'rnnoise'
+  let context: AudioContext
+  try {
+    context = new AudioContext({ sampleRate: 48000 })
+  } catch (error) {
+    if (enableRnnoise) reportRnnoiseFallback(false)
+    console.warn('48 kHz microphone context unavailable', error)
+    enableRnnoise = false
+    context = new AudioContext()
+  }
+  let rnnoise: Awaited<ReturnType<typeof prepareRnnoise>> | undefined
   let input: MediaStream | undefined
   let output: MediaStream | undefined
   try {
-    input = await openInput()
+    if (enableRnnoise) {
+      try {
+        rnnoise = await prepareRnnoise(context)
+      } catch (error) {
+        console.warn('RNNoise initialization failed', error)
+        reportRnnoiseFallback(false)
+      }
+    }
+    input = await openInput(rnnoise ? 'rnnoise' : noiseMode === 'off' ? 'off' : 'standard')
     const { gainPercent, highPassHz, highPassEnabled } = settings()
     const source = context.createMediaStreamSource(input)
     const highPass = context.createBiquadFilter()
@@ -36,12 +61,39 @@ export async function createMicrophonePipeline(
     const destination = context.createMediaStreamDestination()
     destination.channelCount = 1
     output = destination.stream
-    if (highPassEnabled) source.connect(highPass).connect(gain)
-    else source.connect(gain)
+    const next = rnnoise?.node ?? gain
+    if (highPassEnabled) source.connect(highPass).connect(next)
+    else source.connect(next)
+    rnnoise?.node.connect(gain)
     gain.connect(analyser).connect(destination)
     await context.resume()
-    return { context, input, output, source, highPassEnabled, highPass, gain, analyser }
+    const path: MicrophonePath = {
+      context,
+      input,
+      output,
+      source,
+      rnnoise,
+      highPassEnabled,
+      highPass,
+      gain,
+      analyser
+    }
+    rnnoise?.node.addEventListener(
+      'processorerror',
+      () => {
+        if (!path.rnnoise || context.state === 'closed') return
+        const upstream = path.highPassEnabled ? highPass : source
+        upstream.disconnect(path.rnnoise.node)
+        path.rnnoise.dispose()
+        path.rnnoise = undefined
+        upstream.connect(gain)
+        reportRnnoiseFallback(true)
+      },
+      { once: true }
+    )
+    return path
   } catch (error) {
+    rnnoise?.dispose()
     input?.getTracks().forEach((track) => track.stop())
     output?.getTracks().forEach((track) => track.stop())
     void context.close().catch(() => {})
@@ -51,6 +103,7 @@ export async function createMicrophonePipeline(
 
 export function closeMicrophonePath(path: MicrophonePath | undefined): void {
   if (!path) return
+  path.rnnoise?.dispose()
   path.input.getTracks().forEach((track) => track.stop())
   path.output.getTracks().forEach((track) => track.stop())
   void path.context.close().catch(() => {})
@@ -59,12 +112,12 @@ export function closeMicrophonePath(path: MicrophonePath | undefined): void {
 export function setMicrophoneHighPassEnabled(path: MicrophonePath, enabled: boolean): void {
   if (path.highPassEnabled === enabled) return
   if (enabled) {
-    path.source.disconnect(path.gain)
-    path.source.connect(path.highPass).connect(path.gain)
+    path.source.disconnect(path.rnnoise?.node ?? path.gain)
+    path.source.connect(path.highPass).connect(path.rnnoise?.node ?? path.gain)
   } else {
     path.source.disconnect(path.highPass)
-    path.highPass.disconnect(path.gain)
-    path.source.connect(path.gain)
+    path.highPass.disconnect(path.rnnoise?.node ?? path.gain)
+    path.source.connect(path.rnnoise?.node ?? path.gain)
   }
   path.highPassEnabled = enabled
 }

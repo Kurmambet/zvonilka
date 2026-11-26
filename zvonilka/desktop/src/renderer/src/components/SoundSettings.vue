@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import type { NoiseMode } from '../audio/microphonePipeline'
+
 defineProps<{
   microphones: MediaDeviceInfo[]
   outputs: MediaDeviceInfo[]
@@ -10,6 +12,8 @@ defineProps<{
   microphone: boolean
   level: number
   highPassEnabled: boolean
+  noiseMode: NoiseMode
+  rnnoiseNotice: string
   highPassHz: number
   microphoneGain: number
   microphoneOverload: boolean
@@ -29,6 +33,7 @@ const emit = defineEmits<{
   'restart-playback': []
   volume: [event: Event]
   'high-pass-enabled': [enabled: boolean]
+  'noise-mode': [mode: NoiseMode]
   'high-pass-hz': [hz: number]
   'microphone-gain': [percent: number]
 }>()
@@ -41,6 +46,12 @@ function toggleHighPass(event: Event): void {
   if (event.currentTarget instanceof HTMLInputElement) {
     emit('high-pass-enabled', event.currentTarget.checked)
   }
+}
+
+function changeNoiseMode(event: Event): void {
+  if (!(event.currentTarget instanceof HTMLSelectElement)) return
+  const mode = event.currentTarget.value
+  if (mode === 'off' || mode === 'standard' || mode === 'rnnoise') emit('noise-mode', mode)
 }
 
 function changeHighPass(event: Event): void {
@@ -119,35 +130,57 @@ function bindPlayer(element: unknown): void {
         </option>
       </select>
     </label>
-    <label>
-      <input type="checkbox" :checked="highPassEnabled" :disabled="busy" @change="toggleHighPass" />
-      Срез низких частот
-    </label>
-    <label class="device-field">
-      <span>Срез низких частот · {{ highPassHz }} Гц</span>
-      <input
-        type="range"
-        min="60"
-        max="250"
-        :value="highPassHz"
-        :disabled="busy || !highPassEnabled"
-        @input="changeHighPass"
-      />
-    </label>
-    <label class="device-field">
-      <span>Усиление микрофона · {{ microphoneGain }}%</span>
-      <input
-        type="range"
-        min="50"
-        max="200"
-        :value="microphoneGain"
-        :disabled="busy"
-        @input="changeMicrophoneGain"
-      />
-    </label>
+    <details class="processing-settings">
+      <summary>Обработка микрофона</summary>
+      <label class="device-field">
+        <span>Шумоподавление</span>
+        <select
+          :value="noiseMode"
+          :disabled="busy || testing || microphone"
+          @change="changeNoiseMode"
+        >
+          <option value="off">Выключено</option>
+          <option value="standard">Стандартное</option>
+          <option value="rnnoise">RNNoise</option>
+        </select>
+      </label>
+      <p class="audio-caption">Режим применяется при следующем включении микрофона.</p>
+      <label>
+        <input
+          type="checkbox"
+          :checked="highPassEnabled"
+          :disabled="busy"
+          @change="toggleHighPass"
+        />
+        Срез низких частот
+      </label>
+      <label class="device-field">
+        <span>Срез низких частот · {{ highPassHz }} Гц</span>
+        <input
+          type="range"
+          min="60"
+          max="250"
+          :value="highPassHz"
+          :disabled="busy || !highPassEnabled"
+          @input="changeHighPass"
+        />
+      </label>
+      <label class="device-field">
+        <span>Усиление микрофона · {{ microphoneGain }}%</span>
+        <input
+          type="range"
+          min="50"
+          max="200"
+          :value="microphoneGain"
+          :disabled="busy"
+          @input="changeMicrophoneGain"
+        />
+      </label>
+    </details>
     <p v-if="microphoneOverload" class="microphone-overload" role="status">
       Сигнал перегружен - уменьши усиление
     </p>
+    <p v-if="rnnoiseNotice" class="audio-caption" role="status">{{ rnnoiseNotice }}</p>
     <button type="button" :disabled="busy || microphone" @click="emit('toggle-test')">
       {{ testing ? 'Остановить и прослушать' : 'Проверить микрофон' }}
     </button>
