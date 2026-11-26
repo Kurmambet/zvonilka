@@ -9,6 +9,7 @@ defineProps<{
   testing: boolean
   microphone: boolean
   level: number
+  highPassEnabled: boolean
   highPassHz: number
   microphoneGain: number
   microphoneOverload: boolean
@@ -27,12 +28,19 @@ const emit = defineEmits<{
   'toggle-playback': []
   'restart-playback': []
   volume: [event: Event]
+  'high-pass-enabled': [enabled: boolean]
   'high-pass-hz': [hz: number]
   'microphone-gain': [percent: number]
 }>()
 
 function changeOutput(event: Event): void {
   if (event.currentTarget instanceof HTMLSelectElement) emit('output', event.currentTarget.value)
+}
+
+function toggleHighPass(event: Event): void {
+  if (event.currentTarget instanceof HTMLInputElement) {
+    emit('high-pass-enabled', event.currentTarget.checked)
+  }
 }
 
 function changeHighPass(event: Event): void {
@@ -111,6 +119,10 @@ function bindPlayer(element: unknown): void {
         </option>
       </select>
     </label>
+    <label>
+      <input type="checkbox" :checked="highPassEnabled" :disabled="busy" @change="toggleHighPass" />
+      Срез низких частот
+    </label>
     <label class="device-field">
       <span>Срез низких частот · {{ highPassHz }} Гц</span>
       <input
@@ -118,7 +130,7 @@ function bindPlayer(element: unknown): void {
         min="60"
         max="250"
         :value="highPassHz"
-        :disabled="busy"
+        :disabled="busy || !highPassEnabled"
         @input="changeHighPass"
       />
     </label>

@@ -8,6 +8,8 @@ export type MicrophonePath = {
   context: AudioContext
   input: MediaStream
   output: MediaStream
+  source: MediaStreamAudioSourceNode
+  highPassEnabled: boolean
   highPass: BiquadFilterNode
   gain: GainNode
   analyser: AnalyserNode
@@ -15,14 +17,14 @@ export type MicrophonePath = {
 
 export async function createMicrophonePipeline(
   openInput: () => Promise<MediaStream>,
-  settings: () => { gainPercent: number; highPassHz: number }
+  settings: () => { gainPercent: number; highPassHz: number; highPassEnabled: boolean }
 ): Promise<MicrophonePath> {
   const context = new AudioContext()
   let input: MediaStream | undefined
   let output: MediaStream | undefined
   try {
     input = await openInput()
-    const { gainPercent, highPassHz } = settings()
+    const { gainPercent, highPassHz, highPassEnabled } = settings()
     const source = context.createMediaStreamSource(input)
     const highPass = context.createBiquadFilter()
     highPass.type = 'highpass'
@@ -34,9 +36,11 @@ export async function createMicrophonePipeline(
     const destination = context.createMediaStreamDestination()
     destination.channelCount = 1
     output = destination.stream
-    source.connect(highPass).connect(gain).connect(analyser).connect(destination)
+    if (highPassEnabled) source.connect(highPass).connect(gain)
+    else source.connect(gain)
+    gain.connect(analyser).connect(destination)
     await context.resume()
-    return { context, input, output, highPass, gain, analyser }
+    return { context, input, output, source, highPassEnabled, highPass, gain, analyser }
   } catch (error) {
     input?.getTracks().forEach((track) => track.stop())
     output?.getTracks().forEach((track) => track.stop())
@@ -50,6 +54,19 @@ export function closeMicrophonePath(path: MicrophonePath | undefined): void {
   path.input.getTracks().forEach((track) => track.stop())
   path.output.getTracks().forEach((track) => track.stop())
   void path.context.close().catch(() => {})
+}
+
+export function setMicrophoneHighPassEnabled(path: MicrophonePath, enabled: boolean): void {
+  if (path.highPassEnabled === enabled) return
+  if (enabled) {
+    path.source.disconnect(path.gain)
+    path.source.connect(path.highPass).connect(path.gain)
+  } else {
+    path.source.disconnect(path.highPass)
+    path.highPass.disconnect(path.gain)
+    path.source.connect(path.gain)
+  }
+  path.highPassEnabled = enabled
 }
 
 export function updateMicrophoneGain(path: MicrophonePath, percent: number): void {

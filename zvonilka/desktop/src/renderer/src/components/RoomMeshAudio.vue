@@ -7,6 +7,7 @@ import {
   closeMicrophonePath,
   createMicrophonePipeline,
   DEFAULT_HIGH_PASS_HZ,
+  setMicrophoneHighPassEnabled,
   updateMicrophoneGain,
   updateMicrophoneHighPass,
   type MicrophonePath
@@ -65,6 +66,7 @@ type OutputPlayer = HTMLAudioElement & {
   setSinkId(id: string): Promise<void>
 }
 const microphoneGain = ref(100)
+const highPassEnabled = ref(true)
 const highPassHz = ref(DEFAULT_HIGH_PASS_HZ)
 const microphoneOverload = ref(false)
 let capture: MicrophonePath | undefined
@@ -437,8 +439,15 @@ function microphoneErrorText(error: unknown): string {
 function openMicrophonePath(): Promise<MicrophonePath> {
   return createMicrophonePipeline(openMicrophone, () => ({
     gainPercent: microphoneGain.value,
-    highPassHz: highPassHz.value
+    highPassHz: highPassHz.value,
+    highPassEnabled: highPassEnabled.value
   }))
+}
+
+function setHighPassEnabled(enabled: boolean): void {
+  highPassEnabled.value = enabled
+  const path = capture ?? testPath
+  if (path) setMicrophoneHighPassEnabled(path, enabled)
 }
 
 function setHighPassHz(hz: number): void {
@@ -998,6 +1007,7 @@ onBeforeUnmount(() => {
       :testing="testing"
       :microphone="microphone"
       :level="level"
+      :high-pass-enabled="highPassEnabled"
       :high-pass-hz="highPassHz"
       :microphone-gain="microphoneGain"
       :microphone-overload="microphoneOverload"
@@ -1005,6 +1015,7 @@ onBeforeUnmount(() => {
       :test-playing="testPlaying"
       :test-volume="testVolume"
       @output="selectOutput"
+      @high-pass-enabled="setHighPassEnabled"
       @high-pass-hz="setHighPassHz"
       @microphone-gain="setMicrophoneGain"
       @refresh-devices="refreshMicrophones"
