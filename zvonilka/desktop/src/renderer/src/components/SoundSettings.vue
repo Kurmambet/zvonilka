@@ -12,6 +12,7 @@ defineProps<{
   microphone: boolean
   level: number
   highPassEnabled: boolean
+  echoCancellationEnabled: boolean
   noiseMode: NoiseMode
   rnnoiseNotice: string
   highPassHz: number
@@ -33,6 +34,7 @@ const emit = defineEmits<{
   'restart-playback': []
   volume: [event: Event]
   'high-pass-enabled': [enabled: boolean]
+  'echo-cancellation-enabled': [enabled: boolean]
   'noise-mode': [mode: NoiseMode]
   'high-pass-hz': [hz: number]
   'microphone-gain': [percent: number]
@@ -45,6 +47,12 @@ function changeOutput(event: Event): void {
 function toggleHighPass(event: Event): void {
   if (event.currentTarget instanceof HTMLInputElement) {
     emit('high-pass-enabled', event.currentTarget.checked)
+  }
+}
+
+function changeEchoCancellation(event: Event): void {
+  if (event.currentTarget instanceof HTMLInputElement) {
+    emit('echo-cancellation-enabled', event.currentTarget.checked)
   }
 }
 
@@ -132,6 +140,15 @@ function bindPlayer(element: unknown): void {
     </label>
     <details class="processing-settings">
       <summary>Обработка микрофона</summary>
+      <label>
+        <input
+          type="checkbox"
+          :checked="echoCancellationEnabled"
+          :disabled="busy || testing || microphone"
+          @change="changeEchoCancellation"
+        />
+        Эхоподавление
+      </label>
       <label class="device-field">
         <span>Шумоподавление</span>
         <select
@@ -144,7 +161,9 @@ function bindPlayer(element: unknown): void {
           <option value="rnnoise">RNNoise</option>
         </select>
       </label>
-      <p class="audio-caption">Режим применяется при следующем включении микрофона.</p>
+      <p class="audio-caption">
+        Эхоподавление и режим шумоподавления применяются при следующем включении микрофона.
+      </p>
       <label>
         <input
           type="checkbox"

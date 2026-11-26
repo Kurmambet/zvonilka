@@ -68,6 +68,7 @@ type OutputPlayer = HTMLAudioElement & {
 }
 const microphoneGain = ref(100)
 const highPassEnabled = ref(true)
+const echoCancellationEnabled = ref(true)
 const noiseMode = ref<NoiseMode>('standard')
 const rnnoiseNotice = ref('')
 const highPassHz = ref(DEFAULT_HIGH_PASS_HZ)
@@ -415,7 +416,7 @@ async function openMicrophone(mode: NoiseMode): Promise<MediaStream> {
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: {
       ...(deviceId ? { deviceId: { exact: deviceId } } : {}),
-      echoCancellation: true,
+      echoCancellation: echoCancellationEnabled.value,
       noiseSuppression: mode === 'standard'
     }
   })
@@ -1028,6 +1029,7 @@ onBeforeUnmount(() => {
       :microphone="microphone"
       :level="level"
       :high-pass-enabled="highPassEnabled"
+      :echo-cancellation-enabled="echoCancellationEnabled"
       :noise-mode="noiseMode"
       :rnnoise-notice="rnnoiseNotice"
       :high-pass-hz="highPassHz"
@@ -1038,6 +1040,7 @@ onBeforeUnmount(() => {
       :test-volume="testVolume"
       @output="selectOutput"
       @high-pass-enabled="setHighPassEnabled"
+      @echo-cancellation-enabled="echoCancellationEnabled = $event"
       @noise-mode="noiseMode = $event"
       @high-pass-hz="setHighPassHz"
       @microphone-gain="setMicrophoneGain"
