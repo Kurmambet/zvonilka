@@ -21,6 +21,15 @@ type LocalState = {
 
 type RtpSample = {
   stream: string
+  timestampMs: number | null
+  codecId: string | null
+  codec: {
+    mimeType: string
+    clockRate: number | null
+    channels: number | null
+    fmtp: string | null
+  } | null
+  bitrateKbps: number | null
   direction: 'in' | 'out'
   packets: number | null
   bytes: number | null
@@ -126,7 +135,7 @@ function describeRoute(route: Route | null | undefined): string {
     .join(' · ')
 }
 
-function readAudio(stats: RTCStatsReport): RtpSample[] {
+function readAudio(stats: RTCStatsReport, previous: MediaSample | undefined): RtpSample[] {
   const audio: RtpSample[] = []
 
   for (const row of stats.values()) {
@@ -134,11 +143,44 @@ function readAudio(stats: RTCStatsReport): RtpSample[] {
     if (row.type !== 'inbound-rtp' && row.type !== 'outbound-rtp') continue
 
     const incoming = row.type === 'inbound-rtp'
+    const direction = incoming ? 'in' : 'out'
+    const codecId = stringOrNull(row.codecId)
+    const codecRow = codecId ? stats.get(codecId) : undefined
+    const mimeType = codecRow?.type === 'codec' ? stringOrNull(codecRow.mimeType) : null
+    const codec = mimeType
+      ? {
+          mimeType,
+          clockRate: numberOrNull(codecRow?.clockRate),
+          channels: numberOrNull(codecRow?.channels),
+          fmtp: stringOrNull(codecRow?.sdpFmtpLine)
+        }
+      : null
+    const timestampMs = numberOrNull(row.timestamp)
+    const bytes = numberOrNull(incoming ? row.bytesReceived : row.bytesSent)
+    const before = previous?.audio.find(
+      (item) => item.stream === row.id && item.direction === direction
+    )
+    const bitrateKbps =
+      before &&
+      before.timestampMs !== null &&
+      timestampMs !== null &&
+      timestampMs > before.timestampMs &&
+      before.bytes !== null &&
+      bytes !== null &&
+      bytes >= before.bytes &&
+      before.codecId === codecId
+        ? ((bytes - before.bytes) * 8) / (timestampMs - before.timestampMs)
+        : null
+
     audio.push({
       stream: row.id,
-      direction: incoming ? 'in' : 'out',
+      timestampMs,
+      codecId,
+      codec,
+      bitrateKbps,
+      direction,
       packets: numberOrNull(incoming ? row.packetsReceived : row.packetsSent),
-      bytes: numberOrNull(incoming ? row.bytesReceived : row.bytesSent),
+      bytes,
       lost: incoming ? numberOrNull(row.packetsLost) : null,
       jitterMs: incoming ? numberOrNull(row.jitter, 1000) : null
     })
@@ -165,6 +207,18 @@ function packetDelta(samples: MediaSample[], direction: RtpSample['direction']):
   }
 
   return intervals ? `+${total} (${intervals}/${samples.length - 1} интервалов)` : 'нет данных'
+}
+
+function describeAudio(rows: RtpSample[] | undefined, direction: RtpSample['direction']): string {
+  const streams = rows?.filter((row) => row.direction === direction) ?? []
+  if (!streams.length) return 'нет данных'
+
+  return streams
+    .map(({ codec, bitrateKbps }) => {
+      const bitrate = bitrateKbps === null ? '—' : `${Math.round(bitrateKbps * 10) / 10} кбит/с`
+      return `${codec?.mimeType ?? 'кодек неизвестен'} · ${bitrate}`
+    })
+    .join('; ')
 }
 
 function milliseconds(value: number | null | undefined): string {
@@ -325,7 +379,11 @@ export function useCallDiagnostics(): CallDiagnostics {
         record('media.state-changed', link, state)
       }
 
-      diagnostic.samples.push({ at: new Date().toISOString(), rttMs, audio: readAudio(stats) })
+      diagnostic.samples.push({
+        at: new Date().toISOString(),
+        rttMs,
+        audio: readAudio(stats, diagnostic.samples.at(-1))
+      })
       if (diagnostic.samples.length > 60) diagnostic.samples.shift()
     } catch {
       if (isCurrent() && !diagnostic.statsError) {
@@ -399,6 +457,8 @@ export function useCallDiagnostics(): CallDiagnostics {
         `  Собранные кандидаты: ${candidates || 'нет данных'}`,
         `  Окно RTP: ${link.samples[0]?.at ?? '—'} → ${last?.at ?? '—'}`,
         `  Пакеты: принято ${packetDelta(link.samples, 'in')}; отправлено ${packetDelta(link.samples, 'out')}`,
+        `  Приём (RTP): ${describeAudio(last?.audio, 'in')}`,
+        `  Передача (RTP): ${describeAudio(last?.audio, 'out')}`,
         `  Последний RTT: ${milliseconds(last?.rttMs)}; jitter: ${milliseconds(incoming?.jitterMs)}`
       )
     }
