@@ -511,6 +511,16 @@ function setMicrophoneGain(percent: number): void {
   if (path) updateMicrophoneGain(path, microphoneGain.value)
 }
 
+function cancelMicrophoneTest(): void {
+  testPlayer.value?.pause()
+  if (microphone.value) return
+  ticket++
+  stopMicrophoneTest()
+  clearTestRecording()
+  busy.value = false
+  microphoneOverload.value = false
+}
+
 function stopMicrophoneTest(): void {
   const recorder = testRecorder
   testRecorder = undefined
@@ -1015,7 +1025,6 @@ onBeforeUnmount(() => {
         {{ microphone ? 'Выключить микрофон' : 'Включить микрофон' }}
       </button>
       <!-- Действия камеры и демонстрации добавляются в панель звонка. -->
-      <slot />
     </div>
     <SoundSettings
       v-model="selectedMicrophone"
@@ -1048,6 +1057,7 @@ onBeforeUnmount(() => {
       @player="bindTestPlayer"
       @playing="testPlaying = $event"
       @toggle-test="toggleMicrophoneTest"
+      @close-test="cancelMicrophoneTest"
       @toggle-playback="toggleTestPlayback"
       @restart-playback="restartTestPlayback"
       @volume="setTestVolume"
@@ -1055,7 +1065,6 @@ onBeforeUnmount(() => {
 
     <p v-if="microphoneError" class="audio-error" role="alert">{{ microphoneError }}</p>
   </section>
-  <div v-else class="mic-actions"><slot /></div>
 
   <details v-if="diagnosticsAvailable || wsDiagnostics.length" class="diagnostics-panel">
     <summary>Диагностика звонка</summary>

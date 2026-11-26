@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { ref } from 'vue'
+
 import type { NoiseMode } from '../audio/microphonePipeline'
 
 defineProps<{
@@ -30,6 +32,7 @@ const emit = defineEmits<{
   player: [element: unknown]
   playing: [playing: boolean]
   'toggle-test': []
+  'close-test': []
   'toggle-playback': []
   'restart-playback': []
   volume: [event: Event]
@@ -74,10 +77,11 @@ function changeMicrophoneGain(event: Event): void {
   }
 }
 
-function refreshOnOpen(event: Event): void {
-  if (event.currentTarget instanceof HTMLDetailsElement && event.currentTarget.open) {
-    emit('refresh-devices')
-  }
+const settingsDialog = ref<HTMLDialogElement | null>(null)
+
+function openSoundSettings(): void {
+  settingsDialog.value?.showModal()
+  emit('refresh-devices')
 }
 
 function refreshDevices(): void {
@@ -90,8 +94,30 @@ function bindPlayer(element: unknown): void {
 </script>
 
 <template>
-  <details class="sound-settings" @toggle="refreshOnOpen">
-    <summary>Настройки звука</summary>
+  <div class="sound-launchers">
+    <button type="button" @click="openSoundSettings">Настройки звука</button>
+  </div>
+  <label v-if="microphone" class="test-level">
+    <span>Уровень микрофона</span>
+    <meter :value="level" min="0" max="100" />
+  </label>
+  <dialog
+    ref="settingsDialog"
+    class="sound-dialog sound-settings"
+    aria-labelledby="sound-dialog-title"
+    @close="emit('close-test')"
+  >
+    <header class="sound-dialog-header">
+      <h4 id="sound-dialog-title">Настройки звука</h4>
+      <button
+        class="dialog-close"
+        type="button"
+        aria-label="Закрыть"
+        @click="settingsDialog?.close()"
+      >
+        <span aria-hidden="true">×</span>
+      </button>
+    </header>
     <label class="device-field">
       <span>Устройство вывода</span>
       <select
@@ -200,43 +226,47 @@ function bindPlayer(element: unknown): void {
       Сигнал перегружен - уменьши усиление
     </p>
     <p v-if="rnnoiseNotice" class="audio-caption" role="status">{{ rnnoiseNotice }}</p>
-    <button type="button" :disabled="busy || microphone" @click="emit('toggle-test')">
-      {{ testing ? 'Остановить и прослушать' : 'Проверить микрофон' }}
-    </button>
+    <section class="microphone-test" aria-labelledby="microphone-test-title">
+      <h4 id="microphone-test-title">Проверка микрофона</h4>
+      <p v-if="microphone" class="audio-caption">Выключите микрофон звонка, чтобы начать тест.</p>
+      <button type="button" :disabled="busy || microphone" @click="emit('toggle-test')">
+        {{ testing ? 'Остановить и прослушать' : 'Начать запись' }}
+      </button>
 
-    <label v-if="testing || microphone" class="test-level">
-      <span>Говорите в микрофон</span>
-      <meter :value="level" min="0" max="100" />
-    </label>
+      <label v-if="testing" class="test-level">
+        <span>Говорите в микрофон</span>
+        <meter :value="level" min="0" max="100" />
+      </label>
 
-    <div v-if="testRecordingUrl" class="audio-item">
-      <p class="audio-caption">Тестовая запись · слышите только вы</p>
-      <audio
-        :ref="bindPlayer"
-        :src="testRecordingUrl"
-        hidden
-        @play="emit('playing', true)"
-        @pause="emit('playing', false)"
-        @ended="emit('playing', false)"
-      />
-      <div class="audio-controls">
-        <button type="button" :disabled="microphone || busy" @click="emit('toggle-playback')">
-          {{ testPlaying ? 'Пауза' : 'Слушать' }}
-        </button>
-        <button type="button" :disabled="microphone || busy" @click="emit('restart-playback')">
-          С начала
-        </button>
-        <input
-          type="range"
-          min="0"
-          max="100"
-          :value="testVolume"
-          aria-label="Громкость тестовой записи"
-          @input="emit('volume', $event)"
+      <div v-if="testRecordingUrl" class="audio-item">
+        <p class="audio-caption">Тестовая запись · слышите только вы</p>
+        <audio
+          :ref="bindPlayer"
+          :src="testRecordingUrl"
+          hidden
+          @play="emit('playing', true)"
+          @pause="emit('playing', false)"
+          @ended="emit('playing', false)"
         />
+        <div class="audio-controls">
+          <button type="button" :disabled="microphone || busy" @click="emit('toggle-playback')">
+            {{ testPlaying ? 'Пауза' : 'Слушать' }}
+          </button>
+          <button type="button" :disabled="microphone || busy" @click="emit('restart-playback')">
+            С начала
+          </button>
+          <input
+            type="range"
+            min="0"
+            max="100"
+            :value="testVolume"
+            aria-label="Громкость тестовой записи"
+            @input="emit('volume', $event)"
+          />
+        </div>
       </div>
-    </div>
-  </details>
+    </section>
+  </dialog>
 </template>
 
 <style scoped src="./SoundSettings.css"></style>

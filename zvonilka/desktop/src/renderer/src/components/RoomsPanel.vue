@@ -401,24 +401,25 @@ function openRoom(): Promise<void> {
           </p>
           <p class="route-label">Режим: {{ iceMode === 'relay' ? 'Только TURN' : 'Авто' }}</p>
         </div>
-        <button
-          v-if="
-            presence.phase === 'online' &&
-            ownedRoom &&
-            'roomId' in presence &&
-            presence.roomId === ownedRoom.room_id
-          "
-          type="button"
-          @click="inviteDialog?.showModal()"
-        >
-          Пригласить
-        </button>
+        <div class="call-header-actions">
+          <button
+            v-if="
+              presence.phase === 'online' &&
+              ownedRoom &&
+              'roomId' in presence &&
+              presence.roomId === ownedRoom.room_id
+            "
+            type="button"
+            @click="inviteDialog?.showModal()"
+          >
+            Пригласить
+          </button>
+          <button class="disconnect call-disconnect" type="button" @click="disconnect">
+            {{ presence.phase === 'connecting' ? 'Отменить' : 'Выйти из звонка' }}
+          </button>
+        </div>
       </header>
-      <RoomAudio :display-name="props.displayName" :ice-mode="iceMode">
-        <button v-if="callActive" class="disconnect" type="button" @click="disconnect">
-          {{ presence.phase === 'connecting' ? 'Отменить' : 'Выйти из звонка' }}
-        </button>
-      </RoomAudio>
+      <RoomAudio :display-name="props.displayName" :ice-mode="iceMode" />
     </section>
 
     <dialog
@@ -429,7 +430,11 @@ function openRoom(): Promise<void> {
     >
       <header class="call-header">
         <h3 id="invite-title">Приглашения</h3>
-        <form method="dialog"><button type="submit">Готово</button></form>
+        <form method="dialog">
+          <button class="dialog-close" type="submit" aria-label="Закрыть">
+            <span aria-hidden="true">×</span>
+          </button>
+        </form>
       </header>
       <template v-if="ownedRoom">
         <form @submit.prevent="findUser">
