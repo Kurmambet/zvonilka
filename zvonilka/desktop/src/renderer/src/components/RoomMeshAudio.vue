@@ -2,6 +2,15 @@
 import { nextTick, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
 import type { ComponentPublicInstance } from 'vue'
 import SoundSettings from './SoundSettings.vue'
+import {
+  clampHighPassHz,
+  closeMicrophonePath,
+  createMicrophonePipeline,
+  DEFAULT_HIGH_PASS_HZ,
+  updateMicrophoneGain,
+  updateMicrophoneHighPass,
+  type MicrophonePath
+} from '../audio/microphonePipeline'
 import type { AudioPeer, AudioSignal, WsDiagnostic } from '../../../shared/audio'
 import { useCallDiagnostics } from '../composables/useCallDiagnostics'
 import type { LinkDiagnostic } from '../composables/useCallDiagnostics'
@@ -55,15 +64,8 @@ type OutputPlayer = HTMLAudioElement & {
   readonly sinkId: string
   setSinkId(id: string): Promise<void>
 }
-type MicrophonePath = {
-  context: AudioContext
-  input: MediaStream
-  output: MediaStream
-  gain: GainNode
-  analyser: AnalyserNode
-}
-
 const microphoneGain = ref(100)
+const highPassHz = ref(DEFAULT_HIGH_PASS_HZ)
 const microphoneOverload = ref(false)
 let capture: MicrophonePath | undefined
 let ticket = 0
@@ -403,11 +405,18 @@ async function refreshMicrophones(): Promise<void> {
   }
 }
 
-function openMicrophone(): Promise<MediaStream> {
+async function openMicrophone(): Promise<MediaStream> {
   const deviceId = selectedMicrophone.value
-  return navigator.mediaDevices.getUserMedia({
+  const stream = await navigator.mediaDevices.getUserMedia({
     audio: deviceId ? { deviceId: { exact: deviceId } } : true
   })
+  const settings = stream.getAudioTracks()[0]?.getSettings()
+  console.info('[Zvonilka] microphone capture', {
+    echoCancellation: settings?.echoCancellation ?? 'not reported',
+    noiseSuppression: settings?.noiseSuppression ?? 'not reported',
+    autoGainControl: settings?.autoGainControl ?? 'not reported'
+  })
+  return stream
 }
 
 function microphoneErrorText(error: unknown): string {
@@ -425,36 +434,18 @@ function microphoneErrorText(error: unknown): string {
   return 'Не удалось запустить микрофон.'
 }
 
-async function openMicrophonePath(): Promise<MicrophonePath> {
-  const context = new AudioContext()
-  let input: MediaStream | undefined
-  let output: MediaStream | undefined
-  try {
-    input = await openMicrophone()
-    const source = context.createMediaStreamSource(input)
-    const gain = context.createGain()
-    gain.gain.value = microphoneGain.value / 100
-    const analyser = context.createAnalyser()
-    analyser.fftSize = 2048
-    const destination = context.createMediaStreamDestination()
-    destination.channelCount = 1
-    output = destination.stream
-    source.connect(gain).connect(analyser).connect(destination)
-    await context.resume()
-    return { context, input, output, gain, analyser }
-  } catch (error) {
-    input?.getTracks().forEach((track) => track.stop())
-    output?.getTracks().forEach((track) => track.stop())
-    void context.close().catch(() => {})
-    throw error
-  }
+function openMicrophonePath(): Promise<MicrophonePath> {
+  return createMicrophonePipeline(openMicrophone, () => ({
+    gainPercent: microphoneGain.value,
+    highPassHz: highPassHz.value
+  }))
 }
 
-function closeMicrophonePath(path: MicrophonePath | undefined): void {
-  if (!path) return
-  path.input.getTracks().forEach((track) => track.stop())
-  path.output.getTracks().forEach((track) => track.stop())
-  void path.context.close().catch(() => {})
+function setHighPassHz(hz: number): void {
+  if (!Number.isFinite(hz)) return
+  highPassHz.value = clampHighPassHz(hz)
+  const path = capture ?? testPath
+  if (path) updateMicrophoneHighPass(path, highPassHz.value)
 }
 
 function stopMicrophoneMeter(): void {
@@ -487,9 +478,7 @@ function setMicrophoneGain(percent: number): void {
   microphoneGain.value = Math.max(50, Math.min(200, percent))
   microphoneOverload.value = false
   const path = capture ?? testPath
-  if (path) {
-    path.gain.gain.setTargetAtTime(microphoneGain.value / 100, path.context.currentTime, 0.01)
-  }
+  if (path) updateMicrophoneGain(path, microphoneGain.value)
 }
 
 function stopMicrophoneTest(): void {
@@ -1009,12 +998,14 @@ onBeforeUnmount(() => {
       :testing="testing"
       :microphone="microphone"
       :level="level"
+      :high-pass-hz="highPassHz"
       :microphone-gain="microphoneGain"
       :microphone-overload="microphoneOverload"
       :test-recording-url="testRecordingUrl"
       :test-playing="testPlaying"
       :test-volume="testVolume"
       @output="selectOutput"
+      @high-pass-hz="setHighPassHz"
       @microphone-gain="setMicrophoneGain"
       @refresh-devices="refreshMicrophones"
       @player="bindTestPlayer"

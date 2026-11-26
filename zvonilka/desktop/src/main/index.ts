@@ -144,7 +144,8 @@ function createWindow(): void {
       contextIsolation: true,
       nodeIntegration: false,
       webSecurity: true,
-      sandbox: true
+      sandbox: true,
+      devTools: !app.isPackaged
     }
   })
 
