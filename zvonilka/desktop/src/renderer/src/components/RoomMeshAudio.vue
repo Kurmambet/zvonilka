@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
 import type { ComponentPublicInstance } from 'vue'
 import SoundSettings from './SoundSettings.vue'
 import {
@@ -90,6 +90,83 @@ let meterFrame = 0
 let testTimer = 0
 
 const diagnostics = useCallDiagnostics()
+const graphOpen = ref(false)
+const graphPeer = ref('')
+const graphMode = ref<'rtt' | 'bitrate' | 'loss'>('rtt')
+const graphLinks = computed(() => {
+  if (!graphOpen.value) return []
+  void diagnostics.revision.value
+  return diagnostics.graphLinks().slice()
+})
+const graphLink = computed(
+  () =>
+    graphLinks.value.find((link) => link.id === graphPeer.value) ??
+    graphLinks.value.find((link) => !link.closed) ??
+    graphLinks.value[0]
+)
+const graph = computed(() => {
+  const link = graphLinks.value.find((item) => item === graphLink.value)
+  const samples = link?.samples ?? []
+  const mode = graphMode.value
+  const inbound = samples.map((sample) => sample.audio.find((row) => row.direction === 'in'))
+  const outbound = samples.map((sample) => sample.audio.find((row) => row.direction === 'out'))
+  const values =
+    mode === 'bitrate'
+      ? [
+          inbound.map((row) => row?.bitrateKbps ?? null),
+          outbound.map((row) => row?.bitrateKbps ?? null)
+        ]
+      : [
+          mode === 'rtt'
+            ? samples.map((sample) => sample.rttMs)
+            : inbound.map((row, i) => {
+                const before = inbound[i - 1]
+                if (
+                  !row ||
+                  !before ||
+                  row.stream !== before.stream ||
+                  row.lost === null ||
+                  before.lost === null
+                ) {
+                  return null
+                }
+                return Math.max(0, row.lost - before.lost)
+              })
+        ]
+  const peak = Math.ceil(Math.max(1, ...values.flat().map((value) => value ?? 0)))
+  const times = samples.map((sample) => Date.parse(sample.at))
+  const first = times[0] ?? 0
+  const duration = Math.max(1, (times.at(-1) ?? first) - first)
+  const series = values.map((line) =>
+    line.flatMap((value, index) => {
+      if (value === null) return []
+      const x = (i: number): number => 8 + (312 * (times[i] - first)) / duration
+      const y = (v: number): number => 68 - (60 * v) / peak
+      const previous = line[index - 1]
+      return [
+        {
+          index,
+          x: x(index),
+          y: y(value),
+          segment:
+            previous != null ? `M${x(index - 1)},${y(previous)} L${x(index)},${y(value)}` : ''
+        }
+      ]
+    })
+  )
+  return {
+    series,
+    peak,
+    seconds: Math.round(duration / 1000),
+    incoming: inbound.at(-1),
+    outgoing: outbound.at(-1),
+    last: samples.at(-1)
+  }
+})
+
+function graphValue(value: number | null | undefined, unit: string): string {
+  return value == null ? '—' : `${Math.round(value * 10) / 10} ${unit}`
+}
 const diagnosticsAvailable = diagnostics.available
 const diagnosticsText = ref('')
 const diagnosticsStatus = ref('')
@@ -1073,6 +1150,76 @@ onBeforeUnmount(() => {
 
   <details v-if="diagnosticsAvailable || wsDiagnostics.length" class="diagnostics-panel">
     <summary>Диагностика звонка</summary>
+    <details
+      class="call-graph"
+      @toggle="graphOpen = ($event.currentTarget as HTMLDetailsElement).open"
+    >
+      <summary>График связи</summary>
+      <div v-if="graphOpen && graphLink" class="call-graph-body">
+        <div class="call-graph-controls">
+          <label v-if="graphLinks.length > 1">
+            Собеседник
+            <select
+              :value="graphLink.id"
+              @change="graphPeer = ($event.target as HTMLSelectElement).value"
+            >
+              <option v-for="link in graphLinks" :key="link.id" :value="link.id">
+                {{ link.name }}{{ link.closed ? ' · закрыто' : '' }}
+              </option>
+            </select>
+          </label>
+          <label>
+            Метрика
+            <select v-model="graphMode">
+              <option value="rtt">RTT</option>
+              <option value="bitrate">Битрейт</option>
+              <option value="loss">Входящие потери</option>
+            </select>
+          </label>
+        </div>
+        <p>
+          Приём: {{ graph.incoming?.codec?.mimeType ?? '—' }} ·
+          {{ graphValue(graph.incoming?.bitrateKbps, 'кбит/с') }}
+        </p>
+        <p>
+          Передача: {{ graph.outgoing?.codec?.mimeType ?? '—' }} ·
+          {{ graphValue(graph.outgoing?.bitrateKbps, 'кбит/с') }}
+        </p>
+        <p>
+          RTT: {{ graphValue(graph.last?.rttMs, 'мс') }} · Джиттер:
+          {{ graphValue(graph.incoming?.jitterMs, 'мс') }}
+        </p>
+        <template v-if="graph.series.some((line) => line.length)">
+          <svg viewBox="0 0 328 76" role="img" aria-label="История выбранной метрики">
+            <path d="M8,8 V68 H320" fill="none" stroke="#657080" />
+            <g
+              v-for="(line, index) in graph.series"
+              :key="index"
+              :color="index ? '#ffbf77' : '#9cc5ff'"
+            >
+              <g v-for="point in line" :key="point.index">
+                <path v-if="point.segment" :d="point.segment" fill="none" stroke="currentColor" />
+                <circle :cx="point.x" :cy="point.y" r="1.5" fill="currentColor" />
+              </g>
+            </g>
+          </svg>
+          <p>
+            Шкала: 0–{{ graph.peak }}
+            {{
+              graphMode === 'rtt'
+                ? 'мс'
+                : graphMode === 'bitrate'
+                  ? 'кбит/с'
+                  : 'пакетов за интервал'
+            }}
+            · {{ graph.seconds }} с
+          </p>
+          <p v-if="graphMode === 'bitrate'">Голубой — приём, оранжевый — передача.</p>
+        </template>
+        <p v-else>Пока нет данных для этой метрики.</p>
+      </div>
+      <p v-else-if="graphOpen">Ожидаем замеры соединения.</p>
+    </details>
     <button type="button" @click="refreshRouteReport">Сетевой отчёт</button>
     <p v-if="routeReport" class="route-report" role="status">{{ routeReport }}</p>
     <div class="audio-controls">
@@ -1091,3 +1238,30 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped src="./RoomMeshAudio.css"></style>
+
+<style scoped>
+.call-graph {
+  margin-block: 0.5rem;
+}
+
+.call-graph-body {
+  max-width: 25rem;
+  margin-block: 0.375rem;
+  padding: 0.5rem;
+  background: var(--color-background-soft);
+  border-radius: 0.5rem;
+  font-size: 0.8125rem;
+}
+
+.call-graph-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.375rem;
+}
+
+.call-graph svg {
+  display: block;
+  width: 100%;
+}
+</style>

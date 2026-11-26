@@ -243,6 +243,8 @@ const eventLabels: Record<string, string> = {
 
 type CallDiagnostics = {
   available: Ref<boolean>
+  revision: Ref<number>
+  graphLinks: () => readonly LinkDiagnostic[]
   record: (event: string, link?: DiagnosticSource, detail?: unknown) => void
   createLink: (name?: string) => LinkDiagnostic
   closeLink: (link: DiagnosticSource) => void
@@ -259,6 +261,7 @@ type CallDiagnostics = {
 
 export function useCallDiagnostics(): CallDiagnostics {
   const available = ref(false)
+  const revision = ref(0)
   const events: DiagnosticEvent[] = []
   const links: LinkDiagnostic[] = []
   let sequence = 0
@@ -282,6 +285,7 @@ export function useCallDiagnostics(): CallDiagnostics {
       eventsDropped++
     }
     available.value = true
+    revision.value++
   }
 
   function createLink(name?: string): LinkDiagnostic {
@@ -385,6 +389,7 @@ export function useCallDiagnostics(): CallDiagnostics {
         audio: readAudio(stats, diagnostic.samples.at(-1))
       })
       if (diagnostic.samples.length > 60) diagnostic.samples.shift()
+      revision.value++
     } catch {
       if (isCurrent() && !diagnostic.statsError) {
         diagnostic.statsError = true
@@ -410,6 +415,7 @@ export function useCallDiagnostics(): CallDiagnostics {
     linksDropped = 0
     startedAt = null
     available.value = false
+    revision.value++
   }
 
   function format(authorName: string, kind: 'summary' | 'json'): string {
@@ -480,5 +486,17 @@ export function useCallDiagnostics(): CallDiagnostics {
     return lines.join('\n')
   }
 
-  return { available, record, createLink, closeLink, observeIce, sample, routeNow, reset, format }
+  return {
+    available,
+    revision,
+    graphLinks: () => links,
+    record,
+    createLink,
+    closeLink,
+    observeIce,
+    sample,
+    routeNow,
+    reset,
+    format
+  }
 }
